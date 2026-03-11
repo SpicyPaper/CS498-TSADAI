@@ -1,0 +1,9 @@
+[project]
+name = "cs498-tsadai"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "libp2p>=0.6.0",
+]
