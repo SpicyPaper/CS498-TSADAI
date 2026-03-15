@@ -24,8 +24,12 @@ You're ready to use and dev on the project! :D
 
 Run the node/server:
 
-`python -m tsadai.cli.run_node`
+`python -m src.cli.run_node`
 
 Send a ping to the node/server (replace `<address>` by the one displayed on the node side):
 
-`python -m tsadai.cli.send_message --mode ping -d <address>`
+`python -m src.cli.send_message --mode ping -d <address>`
+
+Send a query to the node/server (replace `<address>` by the one displayed on the node side and `<prompt>` by the prompt you want to send):
+
+`python -m src.cli.send_message --mode query --prompt <query> -d <address>`
