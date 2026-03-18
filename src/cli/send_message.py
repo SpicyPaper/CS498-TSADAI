@@ -25,7 +25,7 @@ async def async_main(args):
     ):
         nursery.start_soon(node.host.get_peerstore().start_cleanup_task, 60)
 
-        info = await node.connect_to_peer(args.destination)
+        info = await node.routing_service.connect_to_peer(node.host, args.destination)
         print(f"Connected to peer: {info.peer_id}")
 
         if args.mode == "ping":

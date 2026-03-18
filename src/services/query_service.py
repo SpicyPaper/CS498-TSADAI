@@ -1,15 +1,5 @@
-"""
-Query service.
-
-This service does two things:
-- handle an incoming query stream and answer with llm answer
-- initiate a query to another node and wait for its answer
-
-NOTE: But for now, the answer is a temporary fake one, no llm is
-involved currently.
-"""
-
 import uuid
+
 import trio
 
 from src.logging_utils import log
@@ -18,8 +8,18 @@ from src.protocols import QUERY_PROTOCOL
 
 
 class QueryService:
-    def __init__(self, transport) -> None:
+    """
+    This service can:
+    - receive an incoming query
+    - decide whether to answer locally or forward
+    - send outgoing queries to other peers
+    """
+
+    def __init__(self, transport, local_agent, routing_service, host) -> None:
         self.transport = transport
+        self.local_agent = local_agent
+        self.routing_service = routing_service
+        self.host = host
 
     async def handle_stream(self, stream) -> None:
         """
@@ -46,7 +46,46 @@ class QueryService:
 
             log("SERVER", f"Received query query_id={query_id} prompt={prompt!r}")
 
-            answer = f"Stub answer from remote node. Received prompt: {prompt}"
+            decision = self.routing_service.route_query(prompt)
+
+            if decision.execute_locally:
+                log("SERVER", "Routing decision: execute locally")
+                answer = await self.local_agent.generate(prompt)
+            else:
+                log(
+                    "SERVER",
+                    f"Routing decision: forward to peer={decision.target_peer_id}",
+                )
+
+                profile = self.routing_service.peer_registry.get_profile(
+                    decision.target_peer_id
+                )
+                if profile is None:
+                    raise RuntimeError(
+                        f"unknown target peer: {decision.target_peer_id}"
+                    )
+
+                if not profile.addresses:
+                    raise RuntimeError(
+                        f"no known address for peer: {decision.target_peer_id}"
+                    )
+
+                info = await self.routing_service.connect_to_peer(
+                    self.host, profile.addresses[0]
+                )
+
+                forwarded = await self.query_peer(
+                    self.host,
+                    info.peer_id,
+                    prompt=prompt,
+                    timeout_s=10.0,
+                    query_id=query_id,
+                )
+
+                if not forwarded.ok:
+                    answer = f"[FORWARD FAILED] {forwarded.error}"
+                else:
+                    answer = forwarded.answer
 
             reply = {
                 "type": "response",
@@ -65,12 +104,19 @@ class QueryService:
             await stream.close()
 
     async def query_peer(
-        self, host, peer_id, prompt: str, timeout_s: float = 10.0
+        self,
+        host,
+        peer_id,
+        prompt: str,
+        timeout_s: float = 10.0,
+        query_id: str | None = None,
     ) -> QueryResult:
         """
-        Send one query request to a peer and wait for reply.
+        Send one query to another peer and wait for the response.
         """
-        query_id = str(uuid.uuid4())
+        if query_id is None:
+            query_id = str(uuid.uuid4())
+
         stream = None
 
         try:

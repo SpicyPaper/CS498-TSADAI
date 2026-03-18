@@ -1,35 +1,37 @@
 """
 Reusable Node runtime.
-
-This class owns:
-- the libp2p host
-- the registered protocol handlers
-- connection helpers
-- the services (ping/query)
 """
 
 import random
 import secrets
 
-import multiaddr
 import trio
 from libp2p import new_host
 from libp2p.crypto.secp256k1 import create_new_key_pair
-from libp2p.peer.peerinfo import info_from_p2p_addr
 from libp2p.utils.address_validation import (
     find_free_port,
     get_available_interfaces,
 )
 
+from src.local_agent import DummyAgent
 from src.logging_utils import log
+from src.models import NodeProfile
+from src.peer_registery import PeerRegistry
 from src.protocols import PING_PROTOCOL, QUERY_PROTOCOL
 from src.services.ping_service import PingService
 from src.services.query_service import QueryService
+from src.services.routing_service import RoutingService
 from src.transport import TransportService
 
 
 class Node:
-    def __init__(self, port: int = 0, seed: int | None = None) -> None:
+    def __init__(
+        self,
+        port: int = 0,
+        seed: int | None = None,
+        model_name: str = "dummy-model",
+        capabilities: list[str] | None = None,
+    ) -> None:
         self.port = port if port > 0 else find_free_port()
         # List of addresses that host will accept incoming connections
         self.listen_addrs = get_available_interfaces(self.port)
@@ -45,19 +47,41 @@ class Node:
         self.host = new_host(key_pair=create_new_key_pair(secret))
 
         self.transport = TransportService()
+
+        self.local_profile = NodeProfile(
+            peer_id=self.host.get_id().to_string(),
+            addresses=[],
+            model_name=model_name,
+            capabilities=capabilities or ["general"],
+            is_available=True,
+        )
+
+        self.peer_registry = PeerRegistry()
+        self.local_agent = DummyAgent()
+        self.routing_service = RoutingService(self.local_profile, self.peer_registry)
+
         self.ping_service = PingService(self.transport)
-        self.query_service = QueryService(self.transport)
+        self.query_service = QueryService(
+            self.transport,
+            self.local_agent,
+            self.routing_service,
+            self.host,
+        )
 
     def peer_id(self) -> str:
         return self.host.get_id().to_string()
+
+    def all_shareable_addresses(self) -> list[str]:
+        return [f"{addr}/p2p/{self.peer_id()}" for addr in self.listen_addrs]
 
     def print_addresses(self) -> None:
         """
         Prints useful startup information
         """
         log("NODE", f"I am {self.peer_id()}")
+        log("NODE", f"Model: {self.local_profile.model_name}")
+        log("NODE", f"Capabilities: {self.local_profile.capabilities}")
         log("NODE", "Listening on:")
-
         for addr in self.listen_addrs:
             print(f"  {addr}/p2p/{self.peer_id()}", flush=True)
 
@@ -67,30 +91,31 @@ class Node:
         """
         self.host.set_stream_handler(PING_PROTOCOL, self.ping_service.handle_stream)
         self.host.set_stream_handler(QUERY_PROTOCOL, self.query_service.handle_stream)
-
         log("NODE", f"Registered protocol handler: {PING_PROTOCOL}")
         log("NODE", f"Registered protocol handler: {QUERY_PROTOCOL}")
 
-    async def connect_to_peer(self, destination_multiaddr: str):
-        """
-        Connect to a remote peer using its full /p2p/... multiaddr.
-        """
-        log("CLIENT", f"Connecting to {destination_multiaddr}")
-
-        # Parse the address (string to obj)
-        maddr = multiaddr.Multiaddr(destination_multiaddr)
-        # Convert address to peer info
-        info = info_from_p2p_addr(maddr)
-        await self.host.connect(info)
-
-        log("CLIENT", f"Connected to peer_id={info.peer_id}")
-
-        return info
+    def register_known_peer(
+        self,
+        peer_id: str,
+        addresses: list[str],
+        model_name: str,
+        capabilities: list[str],
+    ) -> None:
+        profile = NodeProfile(
+            peer_id=peer_id,
+            addresses=addresses,
+            model_name=model_name,
+            capabilities=capabilities,
+            is_available=True,
+        )
+        self.peer_registry.add_profile(profile)
+        log("NODE", f"Registered known peer {peer_id} with capabilities={capabilities}")
 
     async def run_forever(self) -> None:
         """
         Start the node and keep it running.
         """
+        self.local_profile.addresses = self.all_shareable_addresses()
         self.register_protocol_handlers()
 
         async with (
