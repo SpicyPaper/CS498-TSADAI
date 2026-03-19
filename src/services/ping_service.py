@@ -1,27 +1,33 @@
-"""
-Ping service.
-
-This service does two things:
-- handle an incoming ping stream and answer with pong
-- initiate a ping to another node and wait for pong
-"""
-
 import secrets
 import time
 
 import trio
 
+from libp2p.abc import IHost
+from libp2p.peer.id import ID
+from libp2p.network.stream.net_stream import INetStream
+
 from src.logging_utils import log
 from src.models import PingResult
 from src.protocols import PING_PROTOCOL
+from src.transport import TransportService
 
 
 class PingService:
-    def __init__(self, transport) -> None:
+    """
+    Ping service.
+
+    This service does two things:
+    - handle an incoming ping stream and answer with pong
+    - initiate a ping to another node and wait for pong
+    """
+
+    def __init__(self, transport: TransportService) -> None:
         self.transport = transport
 
-    async def handle_stream(self, stream) -> None:
+    async def handle_stream(self, stream: INetStream) -> None:
         """
+        Registered on node startup.
         Called automatically when another node opens a stream
         using the ping protocol.
         """
@@ -30,7 +36,7 @@ class PingService:
         try:
             message = await self.transport.receive_message(stream, role="SERVER")
 
-            # Check that protocole is used correctly and type is ping
+            # Check that the protocole is used correctly and the type is ping
             if message.get("type") != "ping":
                 error_payload = {
                     "type": "error",
@@ -61,7 +67,9 @@ class PingService:
             log("SERVER", "Closing ping stream")
             await stream.close()
 
-    async def ping_peer(self, host, peer_id, timeout_s: float = 3.0) -> PingResult:
+    async def ping_peer(
+        self, host: IHost, peer_id: ID, timeout_s: float = 3.0
+    ) -> PingResult:
         """
         Send one ping request to a peer and wait for pong.
         """

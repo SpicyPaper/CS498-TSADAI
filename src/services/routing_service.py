@@ -9,6 +9,7 @@ Does the following:
 import multiaddr
 
 from libp2p.peer.peerinfo import info_from_p2p_addr
+from libp2p.abc import IHost
 
 from src.models import NodeProfile
 from src.peer_registery import PeerRegistry
@@ -51,7 +52,7 @@ class RoutingService:
 
         return RoutingDecision(execute_locally=True)
 
-    async def connect_to_peer(self, host, destination_multiaddr: str):
+    async def connect_to_peer(self, host: IHost, destination_multiaddr: str):
         """
         Connect to a remote peer using its full /p2p/... multiaddr.
         """

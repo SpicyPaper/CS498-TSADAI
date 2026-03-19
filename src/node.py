@@ -1,7 +1,3 @@
-"""
-Reusable Node runtime.
-"""
-
 import random
 import secrets
 
@@ -25,6 +21,14 @@ from src.transport import TransportService
 
 
 class Node:
+    """
+    Center of logic.
+
+    Manage the services (transport, routing, ping, query, etc.).
+    Register and query the local agent LLM.
+    Stores peers through the peer registery.
+    """
+
     def __init__(
         self,
         port: int = 0,
@@ -33,7 +37,7 @@ class Node:
         capabilities: list[str] | None = None,
     ) -> None:
         self.port = port if port > 0 else find_free_port()
-        # List of addresses that host will accept incoming connections
+        # List of addresses from which the host will accept incoming connection
         self.listen_addrs = get_available_interfaces(self.port)
 
         # Seed is useful for tests
@@ -48,6 +52,7 @@ class Node:
 
         self.transport = TransportService()
 
+        # Create the Profile of the current Node
         self.local_profile = NodeProfile(
             peer_id=self.host.get_id().to_string(),
             addresses=[],
@@ -55,6 +60,7 @@ class Node:
             capabilities=capabilities or ["general"],
             is_available=True,
         )
+        self.local_profile.addresses = self.all_shareable_addresses()
 
         self.peer_registry = PeerRegistry()
         self.local_agent = DummyAgent()
@@ -62,28 +68,31 @@ class Node:
 
         self.ping_service = PingService(self.transport)
         self.query_service = QueryService(
+            self.host,
             self.transport,
             self.local_agent,
             self.routing_service,
-            self.host,
         )
 
-    def peer_id(self) -> str:
-        return self.host.get_id().to_string()
-
     def all_shareable_addresses(self) -> list[str]:
-        return [f"{addr}/p2p/{self.peer_id()}" for addr in self.listen_addrs]
+        """
+        Returns an array containing all the addresses (address + p2p + peer id)
+        on which the local node can be reached.
+        """
+        return [
+            f"{addr}/p2p/{self.local_profile.peer_id}" for addr in self.listen_addrs
+        ]
 
     def print_addresses(self) -> None:
         """
-        Prints useful startup information
+        Prints node information.
         """
-        log("NODE", f"I am {self.peer_id()}")
+        log("NODE", f"I am {self.local_profile.peer_id}")
         log("NODE", f"Model: {self.local_profile.model_name}")
         log("NODE", f"Capabilities: {self.local_profile.capabilities}")
         log("NODE", "Listening on:")
-        for addr in self.listen_addrs:
-            print(f"  {addr}/p2p/{self.peer_id()}", flush=True)
+        for addr in self.local_profile.addresses:
+            print(f"  {addr}", flush=True)
 
     def register_protocol_handlers(self) -> None:
         """
@@ -101,6 +110,9 @@ class Node:
         model_name: str,
         capabilities: list[str],
     ) -> None:
+        """
+        Register a known peer in the peer registry.
+        """
         profile = NodeProfile(
             peer_id=peer_id,
             addresses=addresses,
@@ -115,7 +127,6 @@ class Node:
         """
         Start the node and keep it running.
         """
-        self.local_profile.addresses = self.all_shareable_addresses()
         self.register_protocol_handlers()
 
         async with (

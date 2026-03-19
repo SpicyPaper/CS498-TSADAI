@@ -2,9 +2,16 @@ import uuid
 
 import trio
 
+from libp2p.abc import IHost
+from libp2p.peer.id import ID
+from libp2p.network.stream.net_stream import INetStream
+
 from src.logging_utils import log
 from src.models import QueryResult
 from src.protocols import QUERY_PROTOCOL
+from src.transport import TransportService
+from src.services.routing_service import RoutingService
+from src.local_agent import LocalAgent
 
 
 class QueryService:
@@ -15,23 +22,30 @@ class QueryService:
     - send outgoing queries to other peers
     """
 
-    def __init__(self, transport, local_agent, routing_service, host) -> None:
+    def __init__(
+        self,
+        host: IHost,
+        transport: TransportService,
+        local_agent: LocalAgent,
+        routing_service: RoutingService,
+    ) -> None:
+        self.host = host
         self.transport = transport
         self.local_agent = local_agent
         self.routing_service = routing_service
-        self.host = host
 
-    async def handle_stream(self, stream) -> None:
+    async def handle_stream(self, stream: INetStream) -> None:
         """
+        Registered on node startup.
         Called automatically when another node opens a stream
-        using the query protocol.
+        using the ping protocol.
         """
         log("SERVER", "Incoming query stream from remote peer")
 
         try:
             message = await self.transport.receive_message(stream, role="SERVER")
 
-            # Check that protocole is used correctly and type is query
+            # Check that the protocole is used correctly and the type is query
             if message.get("type") != "query":
                 error_payload = {
                     "type": "error",
@@ -105,8 +119,8 @@ class QueryService:
 
     async def query_peer(
         self,
-        host,
-        peer_id,
+        host: IHost,
+        peer_id: ID,
         prompt: str,
         timeout_s: float = 10.0,
         query_id: str | None = None,

@@ -11,6 +11,9 @@ import json
 from typing import Any
 
 from libp2p.network.stream.net_stream import INetStream
+from libp2p.abc import IHost
+from libp2p.peer.id import ID
+from libp2p.custom_types import TProtocol
 
 from src.logging_utils import log
 
@@ -18,7 +21,7 @@ MAX_READ_LEN = 2**32 - 1
 
 
 class TransportService:
-    async def open_stream(self, host, peer_id, protocol_id):
+    async def open_stream(self, host: IHost, peer_id: ID, protocol_id: TProtocol):
         """
         Open a stream to a remote peer for one specific protocol.
         """
