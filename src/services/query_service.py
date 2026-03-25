@@ -7,7 +7,7 @@ from libp2p.peer.id import ID
 from libp2p.network.stream.net_stream import INetStream
 
 from src.logging_utils import log
-from src.models import QueryResult
+from src.models import QueryResult, QueryContext
 from src.protocols import QUERY_PROTOCOL
 from src.transport import TransportService
 from src.services.routing_service import RoutingService
@@ -16,10 +16,12 @@ from src.local_agent import LocalAgent
 
 class QueryService:
     """
-    This service can:
-    - receive an incoming query
-    - decide whether to answer locally or forward
-    - send outgoing queries to other peers
+    Query service provides:
+    - local execution
+    - safe forwarding
+    - query context propagation
+    - loop prevention
+    - max hop bounding
     """
 
     def __init__(
@@ -33,6 +35,16 @@ class QueryService:
         self.transport = transport
         self.local_agent = local_agent
         self.routing_service = routing_service
+
+    def _parse_context_from_message(self, message: dict) -> QueryContext:
+        raw = message.get("query_context", {})
+
+        return QueryContext(
+            origin_peer_id=raw.get("origin_peer_id", "unknown"),
+            visited_peers=list(raw.get("visited_peers", [])),
+            hop_count=int(raw.get("hop_count", 0)),
+            max_hops=int(raw.get("max_hops", 3)),
+        )
 
     async def handle_stream(self, stream: INetStream) -> None:
         """
@@ -57,10 +69,35 @@ class QueryService:
 
             prompt = message.get("prompt", "")
             query_id = message.get("query_id")
+            context = self._parse_context_from_message(message)
 
-            log("SERVER", f"Received query query_id={query_id} prompt={prompt!r}")
+            log(
+                "SERVER",
+                f"Received query query_id={query_id} prompt={prompt!r} "
+                f"hop_count={context.hop_count} visited={context.visited_peers}",
+            )
 
-            decision = self.routing_service.route_query(prompt)
+            # Detect direct loops.
+            if self.host.get_id().to_string() in context.visited_peers:
+                answer = "[ROUTING ERROR] Loop detected: local peer already visited."
+                reply = {
+                    "type": "response",
+                    "query_id": query_id,
+                    "answer": answer,
+                }
+                await self.transport.send_message(stream, reply, role="SERVER")
+                return
+
+            # Build the context that this node will use / propagate further.
+            next_context = QueryContext(
+                origin_peer_id=context.origin_peer_id,
+                visited_peers=context.visited_peers + [self.host.get_id().to_string()],
+                hop_count=context.hop_count + 1,
+                max_hops=context.max_hops,
+            )
+
+            decision = self.routing_service.route_query(prompt, next_context)
+            log("SERVER", f"Routing decision: {decision.reason}")
 
             if decision.execute_locally:
                 log("SERVER", "Routing decision: execute locally")
@@ -71,35 +108,23 @@ class QueryService:
                     f"Routing decision: forward to peer={decision.target_peer_id}",
                 )
 
-                profile = self.routing_service.peer_registry.get_profile(
-                    decision.target_peer_id
-                )
-                if profile is None:
-                    raise RuntimeError(
-                        f"unknown target peer: {decision.target_peer_id}"
-                    )
-
-                if not profile.addresses:
-                    raise RuntimeError(
-                        f"no known address for peer: {decision.target_peer_id}"
-                    )
-
-                info = await self.routing_service.connect_to_peer(
-                    self.host, profile.addresses[0]
-                )
-
                 forwarded = await self.query_peer(
                     self.host,
-                    info.peer_id,
+                    ID.from_base58(decision.target_peer_id),
                     prompt=prompt,
                     timeout_s=10.0,
                     query_id=query_id,
+                    query_context=next_context,
                 )
 
-                if not forwarded.ok:
-                    answer = f"[FORWARD FAILED] {forwarded.error}"
-                else:
+                if forwarded.ok:
                     answer = forwarded.answer
+                else:
+                    log(
+                        "SERVER",
+                        f"Forwarding failed, fallback to local: {forwarded.error}",
+                    )
+                    answer = await self.local_agent.generate(prompt)
 
             reply = {
                 "type": "response",
@@ -124,6 +149,7 @@ class QueryService:
         prompt: str,
         timeout_s: float = 10.0,
         query_id: str | None = None,
+        query_context: QueryContext | None = None,
     ) -> QueryResult:
         """
         Send one query to another peer and wait for the response.
@@ -131,21 +157,49 @@ class QueryService:
         if query_id is None:
             query_id = str(uuid.uuid4())
 
+        if query_context is None:
+            query_context = QueryContext(
+                origin_peer_id=self.host.get_id().to_string(),
+                visited_peers=[],
+                hop_count=0,
+                max_hops=3,
+            )
+
         stream = None
 
         try:
             # Send query to node with peer_id
             with trio.fail_after(timeout_s):
+                known_addr = self.routing_service.peer_registry.get_any_address(
+                    str(peer_id)
+                )
+
+                if known_addr is not None:
+                    try:
+                        await self.routing_service.connect_to_peer(host, known_addr)
+                    except Exception as exc:
+                        log("CLIENT", f"Lazy connect failed for peer={peer_id}: {exc}")
+
                 stream = await self.transport.open_stream(host, peer_id, QUERY_PROTOCOL)
 
                 payload = {
                     "type": "query",
                     "query_id": query_id,
                     "prompt": prompt,
+                    "query_context": {
+                        "origin_peer_id": query_context.origin_peer_id,
+                        "visited_peers": query_context.visited_peers,
+                        "hop_count": query_context.hop_count,
+                        "max_hops": query_context.max_hops,
+                    },
                 }
 
                 await self.transport.send_message(stream, payload, role="CLIENT")
-                log("CLIENT", f"Query sent to peer={peer_id} query_id={query_id}")
+                log(
+                    "CLIENT",
+                    f"Query sent to peer={peer_id} query_id={query_id} "
+                    f"hop_count={query_context.hop_count} visited={query_context.visited_peers}",
+                )
 
                 reply = await self.transport.receive_message(stream, role="CLIENT")
                 log(

@@ -1,9 +1,11 @@
 import random
 import secrets
 
+import multiaddr
 import trio
 from libp2p import new_host
 from libp2p.crypto.secp256k1 import create_new_key_pair
+from libp2p.peer.peerinfo import info_from_p2p_addr
 from libp2p.utils.address_validation import (
     find_free_port,
     get_available_interfaces,
@@ -12,8 +14,9 @@ from libp2p.utils.address_validation import (
 from src.local_agent import DummyAgent
 from src.logging_utils import log
 from src.models import NodeProfile
-from src.peer_registery import PeerRegistry
+from src.peer_registry import PeerRegistry
 from src.protocols import PING_PROTOCOL, QUERY_PROTOCOL
+from src.services.health_service import HealthService
 from src.services.ping_service import PingService
 from src.services.query_service import QueryService
 from src.services.routing_service import RoutingService
@@ -49,7 +52,6 @@ class Node:
             secret = secrets.token_bytes(32)
 
         self.host = new_host(key_pair=create_new_key_pair(secret))
-
         self.transport = TransportService()
 
         # Create the Profile of the current Node
@@ -71,6 +73,12 @@ class Node:
             self.host,
             self.transport,
             self.local_agent,
+            self.routing_service,
+        )
+
+        self.health_service = HealthService(
+            self.peer_registry,
+            self.ping_service,
             self.routing_service,
         )
 
@@ -134,6 +142,13 @@ class Node:
             trio.open_nursery() as nursery,
         ):
             nursery.start_soon(self.host.get_peerstore().start_cleanup_task, 60)
+            nursery.start_soon(
+                self.health_service.run_periodic_checks,
+                self.host,
+                10.0,
+                3.0,
+            )
+
             self.print_addresses()
             log("NODE", "Node started. Waiting for incoming streams...")
             await trio.sleep_forever()

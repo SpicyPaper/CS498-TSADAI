@@ -32,3 +32,20 @@ class QueryResult:
     peer_id: Optional[str]
     answer: Optional[str]
     error: Optional[str]
+
+
+@dataclass
+class PeerStatus:
+    peer_id: str
+    is_alive: bool = False
+    last_rtt_ms: Optional[float] = None
+    last_checked_ts_ms: Optional[int] = None
+    consecutive_failures: int = 0
+
+
+@dataclass
+class QueryContext:
+    origin_peer_id: str
+    visited_peers: list[str]
+    hop_count: int
+    max_hops: int
