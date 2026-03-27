@@ -36,24 +36,16 @@ You're ready to use and dev on the project! :D
 
 `python -m src.cli.send_message --mode query --prompt <query> -d <address>`
 
-## Basic dummy model with capabilities test
+## Basic dummy model with capabilities and DHT test
 
 - Run the first node:
 
-`python -m src.cli.run_node -p 8001 --model-name math-model --capabilities math`
+`python -m src.cli.run_node -p 8000 --dht-mode server --model-name bootstrap --capabilities general --advertise-address-mode ipv6_loopback`
 
-- Run the second node (replace `<address>` by the one displayed on the first node side and `<peer_id>` by the ending part of the address of the first node after the last /):
+- Run the second node (replace `<address>` by the one displayed on the first node side):
 
-`python -m src.cli.run_node -p 8000 --model-name general-model --capabilities general --known-peer-id <peed_id> --known-peer-addr <address> --known-peer-model math-model --known-peer-capabilities math`
+`python -m src.cli.run_node -p 8001 --dht-mode server --model-name math-node --capabilities math --bootstrap <address> --advertise-address-mode ipv6_loopback`
 
-- Send a query to the first node (replace `<address>` by the one displayed on the first node side):
+- Run the third node (replace `<address>` by the one displayed on the first node side):
 
-`python -m src.cli.send_message --mode query -d <address> --prompt "do some math please"`
-
-The first node should answer directly and locally.
-
-- Send a query to the second node (replace `<address>` by the one displayed on the second node side):
-
-`python -m src.cli.send_message --mode query -d <address> --prompt "do some math please"`
-
-The second node should forward the request to the first node which should answer.
+`python -m src.cli.run_node -p 8002 --dht-mode client --model-name general-node --capabilities general --bootstrap <address> --advertise-address-mode ipv6_loopback`
