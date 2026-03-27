@@ -1,12 +1,11 @@
-import trio
-
 from libp2p.abc import IHost
 from libp2p.peer.id import ID
 
+from src.network_utils import connect_to_peer
 from src.logging_utils import log
 from src.peer_registry import PeerRegistry
 from src.services.ping_service import PingService
-from src.services.routing_service import RoutingService
+from src.models import PingResult
 
 
 class HealthService:
@@ -21,15 +20,15 @@ class HealthService:
         self,
         peer_registry: PeerRegistry,
         ping_service: PingService,
-        routing_service: RoutingService,
+        local_peer_id: str,
     ) -> None:
         self.peer_registry = peer_registry
         self.ping_service = ping_service
-        self.routing_service = routing_service
+        self.local_peer_id = local_peer_id
 
     async def check_peer(
         self, host: IHost, peer_id: ID, timeout_s: float = 3.0
-    ) -> None:
+    ) -> PingResult:
         """
         Check if a peer is alive or not.
         """
@@ -37,7 +36,7 @@ class HealthService:
 
         if known_addr is not None:
             try:
-                await self.routing_service.connect_to_peer(host, known_addr)
+                await connect_to_peer(host, known_addr)
             except Exception as exc:
                 log("HEALTH", f"Lazy connect failed for peer_id={peer_id}: {exc}")
 
@@ -50,28 +49,4 @@ class HealthService:
             self.peer_registry.mark_peer_unreachable(str(peer_id))
             log("HEALTH", f"Peer unreachable peer_id={peer_id} error={result.error}")
 
-    async def run_periodic_checks(
-        self,
-        host: IHost,
-        interval_s: float = 10.0,
-        timeout_s: float = 3.0,
-    ) -> None:
-        """
-        Check periodically if nodes are available or not.
-        """
-        while True:
-            profiles = self.peer_registry.all_profiles()
-
-            for profile in profiles:
-                try:
-                    await self.check_peer(
-                        host, ID.from_base58(profile.peer_id), timeout_s=timeout_s
-                    )
-                except Exception as exc:
-                    self.peer_registry.mark_peer_unreachable(profile.peer_id)
-                    log(
-                        "HEALTH",
-                        f"Health check failed for peer_id={profile.peer_id}: {exc}",
-                    )
-
-            await trio.sleep(interval_s)
+        return result

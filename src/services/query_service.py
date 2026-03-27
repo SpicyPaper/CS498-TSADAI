@@ -6,6 +6,7 @@ from libp2p.abc import IHost
 from libp2p.peer.id import ID
 from libp2p.network.stream.net_stream import INetStream
 
+from src.network_utils import connect_to_peer
 from src.logging_utils import log
 from src.models import QueryResult, QueryContext
 from src.protocols import QUERY_PROTOCOL
@@ -96,7 +97,7 @@ class QueryService:
                 max_hops=context.max_hops,
             )
 
-            decision = self.routing_service.route_query(prompt, next_context)
+            decision = await self.routing_service.route_query(prompt, next_context)
             log("SERVER", f"Routing decision: {decision.reason}")
 
             if decision.execute_locally:
@@ -109,7 +110,6 @@ class QueryService:
                 )
 
                 forwarded = await self.query_peer(
-                    self.host,
                     ID.from_base58(decision.target_peer_id),
                     prompt=prompt,
                     timeout_s=10.0,
@@ -118,8 +118,15 @@ class QueryService:
                 )
 
                 if forwarded.ok:
+                    self.routing_service.peer_registry.mark_peer_alive(
+                        decision.target_peer_id,
+                        rtt_ms=None,
+                    )
                     answer = forwarded.answer
                 else:
+                    self.routing_service.peer_registry.mark_peer_unreachable(
+                        decision.target_peer_id
+                    )
                     log(
                         "SERVER",
                         f"Forwarding failed, fallback to local: {forwarded.error}",
@@ -144,7 +151,6 @@ class QueryService:
 
     async def query_peer(
         self,
-        host: IHost,
         peer_id: ID,
         prompt: str,
         timeout_s: float = 10.0,
@@ -176,11 +182,13 @@ class QueryService:
 
                 if known_addr is not None:
                     try:
-                        await self.routing_service.connect_to_peer(host, known_addr)
+                        await connect_to_peer(self.host, known_addr)
                     except Exception as exc:
                         log("CLIENT", f"Lazy connect failed for peer={peer_id}: {exc}")
 
-                stream = await self.transport.open_stream(host, peer_id, QUERY_PROTOCOL)
+                stream = await self.transport.open_stream(
+                    self.host, peer_id, QUERY_PROTOCOL
+                )
 
                 payload = {
                     "type": "query",

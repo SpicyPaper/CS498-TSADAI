@@ -13,6 +13,7 @@ import sys
 
 import trio
 
+from src.network_utils import connect_to_peer
 from src.node import Node
 
 
@@ -25,7 +26,7 @@ async def async_main(args):
     ):
         nursery.start_soon(node.host.get_peerstore().start_cleanup_task, 60)
 
-        info = await node.routing_service.connect_to_peer(node.host, args.destination)
+        info = await connect_to_peer(node.host, args.destination)
         print(f"Connected to peer: {info.peer_id}")
 
         if args.mode == "ping":
@@ -39,7 +40,6 @@ async def async_main(args):
 
         elif args.mode == "query":
             result = await node.query_service.query_peer(
-                node.host,
                 info.peer_id,
                 prompt=args.prompt,
                 timeout_s=args.timeout,

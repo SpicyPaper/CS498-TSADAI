@@ -4,8 +4,10 @@ Start one node and keep it alive.
 
 import argparse
 import sys
+import traceback
 
 import trio
+from libp2p.kad_dht.kad_dht import DHTMode
 
 from src.node import Node
 
@@ -13,26 +15,17 @@ from src.node import Node
 async def async_main(args):
     capabilities = [c.strip() for c in args.capabilities.split(",") if c.strip()]
 
+    dht_mode = DHTMode.SERVER if args.dht_mode == "server" else DHTMode.CLIENT
     node = Node(
         port=args.port,
         seed=args.seed,
         model_name=args.model_name,
         capabilities=capabilities,
+        dht_mode=dht_mode,
+        advertise_address_mode=args.advertise_address_mode,
     )
 
-    # Optional manually known peer
-    if args.known_peer_id and args.known_peer_addr:
-        peer_capabilities = [
-            c.strip() for c in args.known_peer_capabilities.split(",") if c.strip()
-        ]
-        node.register_known_peer(
-            peer_id=args.known_peer_id,
-            addresses=[args.known_peer_addr],
-            model_name=args.known_peer_model,
-            capabilities=peer_capabilities,
-        )
-
-    await node.run_forever()
+    await node.run_forever(bootstrap_addrs=args.bootstrap)
 
 
 def main():
@@ -41,20 +34,23 @@ def main():
     parser.add_argument("-s", "--seed", type=int, default=None)
     parser.add_argument("--model-name", type=str, default="dummy-model")
     parser.add_argument("--capabilities", type=str, default="general")
+    parser.add_argument("--dht-mode", choices=["server", "client"], default="server")
+    parser.add_argument("--bootstrap", nargs="*", default=[])
 
-    parser.add_argument("--known-peer-id", type=str, default=None)
-    parser.add_argument("--known-peer-addr", type=str, default=None)
-    parser.add_argument("--known-peer-model", type=str, default="remote-model")
-    parser.add_argument("--known-peer-capabilities", type=str, default="general")
+    parser.add_argument(
+        "--advertise-address-mode",
+        choices=["ipv6_loopback"],
+        default="ipv6_loopback",
+        help="Which address family/mode to advertise in the node profile.",
+    )
 
     args = parser.parse_args()
 
     try:
         trio.run(async_main, args)
-    except KeyboardInterrupt:
-        print("\nStopped.")
-    except Exception as exc:
-        print(f"Fatal error: {exc}", file=sys.stderr)
+    except BaseException as exc:
+        print("\n=== FULL EXCEPTION ===", file=sys.stderr, flush=True)
+        traceback.print_exception(type(exc), exc, exc.__traceback__)
         sys.exit(1)
 
 
