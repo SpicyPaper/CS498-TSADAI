@@ -101,29 +101,32 @@ class PeerRegistry:
             return None
         return profile.addresses[0]
 
-    def find_live_by_capability(
+    def is_peer_fresh_live(self, peer_id: str, max_age_ms: int) -> bool:
+        status = self._statuses.get(peer_id)
+        if status is None or not status.is_alive or status.last_checked_ts_ms is None:
+            return False
+
+        age_ms = int(time.time() * 1000) - status.last_checked_ts_ms
+        return age_ms <= max_age_ms
+
+    def find_fresh_live_by_capability(
         self,
         capability: str,
         *,
+        max_age_ms: int,
         exclude_peer_ids: set[str] | None = None,
     ) -> list[NodeProfile]:
         exclude_peer_ids = exclude_peer_ids or set()
         results: list[NodeProfile] = []
 
-        log("DEBUG", "find_live_by_capability")
         for peer_id, profile in self._profiles.items():
-            log("DEBUG", f"{peer_id}, {profile.capabilities}")
             if peer_id in exclude_peer_ids:
                 continue
             if capability not in profile.capabilities:
                 continue
-
-            status = self._statuses.get(peer_id)
-            log("DEBUG", f"{status}")
-            if status is None or not status.is_alive:
+            if not self.is_peer_fresh_live(peer_id, max_age_ms):
                 continue
 
-            log("DEBUG", "appended to res")
             results.append(profile)
 
         return results

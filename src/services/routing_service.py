@@ -1,3 +1,5 @@
+import random
+
 from libp2p.abc import IHost
 from libp2p.peer.id import ID
 
@@ -14,10 +16,12 @@ class RoutingDecision:
         execute_locally: bool,
         target_peer_id: str | None = None,
         reason: str = "",
+        no_suitable_node: bool = False,
     ) -> None:
         self.execute_locally = execute_locally
         self.target_peer_id = target_peer_id
         self.reason = reason
+        self.no_suitable_node = no_suitable_node
 
 
 class RoutingService:
@@ -34,6 +38,7 @@ class RoutingService:
         local_profile: NodeProfile,
         peer_registry: PeerRegistry,
         dht_service: DHTService,
+        live_ttl_ms: int,
         health_service: HealthService | None = None,
     ) -> None:
         self.host = host
@@ -41,6 +46,7 @@ class RoutingService:
         self.peer_registry = peer_registry
         self.dht_service = dht_service
         self.health_service = health_service
+        self.live_ttl_ms = live_ttl_ms
 
     def infer_required_capability(self, prompt: str) -> str:
         """
@@ -95,40 +101,40 @@ class RoutingService:
     ) -> NodeProfile | None:
         """
         Validate cached candidates on demand with ping.
+        Randomize order so we do not always try the same peer first.
         """
         if not candidates:
             return None
 
+        randomized = list(candidates)
+        random.shuffle(randomized)
+
         if self.health_service is None:
             return candidates[0]
 
-        log("DEBUG", "_pick_reachable_candidate")
         for candidate in candidates:
-            log("DEBUG", f"{candidate.peer_id}")
             result = await self.health_service.check_peer(
                 self.host,
                 ID.from_base58(candidate.peer_id),
                 timeout_s=timeout_s,
             )
             if result.ok:
-                log("DEBUG", "selected")
                 return candidate
 
         return None
 
     async def route_query(self, prompt: str, context: QueryContext) -> RoutingDecision:
         """
-        Minimal routing rule:
-        - infer required capability
-        - prefer local
-        - refresh from DHT
-        - prefer recently known live peers
-        - otherwise validate cached candidates on demand with ping
-        - fallback locally
+        Routing rule:
+        1. local if capable
+        2. fresh live capable peer
+        3. cached capable peer checked on demand
+        4. random other known peer
+        5. fallback local
         """
         required_capability = self.infer_required_capability(prompt)
 
-        # If local node supports it, execute locally.
+        # 1) If local node supports it, execute locally.
         if required_capability in self.local_profile.capabilities:
             return RoutingDecision(
                 execute_locally=True,
@@ -138,46 +144,70 @@ class RoutingService:
         # Prevent infinite forwarding.
         if context.hop_count >= context.max_hops:
             return RoutingDecision(
-                execute_locally=True,
-                reason="max hops reached, fallback to local execution",
+                execute_locally=False,
+                target_peer_id=None,
+                reason="max hops reached, no suitable node found",
+                no_suitable_node=True,
             )
-
-        # Refresh cache from DHT.
-        await self.refresh_candidates_from_dht(required_capability)
 
         excluded = set(context.visited_peers)
         excluded.add(self.local_profile.peer_id)
 
-        # Check if a peer already marked as live is capable to answer the query
-        live_candidates = self.peer_registry.find_live_by_capability(
+        # Refresh cache from DHT for the required capability.
+        await self.refresh_candidates_from_dht(required_capability)
+
+        # 2) Try fresh live capable peers first.
+        fresh_live_candidates = self.peer_registry.find_fresh_live_by_capability(
             required_capability,
+            max_age_ms=self.live_ttl_ms,
             exclude_peer_ids=excluded,
         )
-        if live_candidates:
+        if fresh_live_candidates:
+            chosen = random.choice(fresh_live_candidates)
             return RoutingDecision(
                 execute_locally=False,
-                target_peer_id=live_candidates[0].peer_id,
+                target_peer_id=chosen.peer_id,
                 reason=f"forward to live peer with capability={required_capability}",
             )
 
-        # Otherwise, get peers that are capable but with unknown live status
-        cached_candidates = [
+        # 3) Otherwise try cached capable peers by probing them.
+        cached_capable_candidates = [
             profile
             for profile in self.peer_registry.all_profiles()
             if profile.peer_id not in excluded
             and required_capability in profile.capabilities
         ]
 
-        # Test reachability of candidate and pick a live candidate
-        reachable = await self._pick_reachable_candidate(cached_candidates)
-        if reachable is not None:
+        reachable_capable = await self._pick_reachable_candidate(
+            cached_capable_candidates
+        )
+        if reachable_capable is not None:
             return RoutingDecision(
                 execute_locally=False,
-                target_peer_id=reachable.peer_id,
-                reason=f"forward to on-demand checked peer with capability={required_capability}",
+                target_peer_id=reachable_capable.peer_id,
+                reason=f"forward to reachable checked peer with capability={required_capability}",
             )
 
-        # No candidates were reachable, fallback locally
+        # 4) No capable peer worked: try one random other known peer.
+        capable_peer_ids = {profile.peer_id for profile in cached_capable_candidates}
+        capable_peer_ids.update(profile.peer_id for profile in fresh_live_candidates)
+
+        other_candidates = [
+            profile
+            for profile in self.peer_registry.all_profiles()
+            if profile.peer_id not in excluded
+            and profile.peer_id not in capable_peer_ids
+        ]
+
+        reachable_other = await self._pick_reachable_candidate(other_candidates)
+        if reachable_other is not None:
+            return RoutingDecision(
+                execute_locally=False,
+                target_peer_id=reachable_other.peer_id,
+                reason="forward to random other known peer",
+            )
+
+        # 5) Fallback local.
         return RoutingDecision(
             execute_locally=True,
             reason=f"no reachable peer found for capability={required_capability}, fallback locally",

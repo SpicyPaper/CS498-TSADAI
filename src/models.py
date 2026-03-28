@@ -25,6 +25,7 @@ class QueryResult:
     peer_id: Optional[str]
     answer: Optional[str]
     error: Optional[str]
+    status: str = "ok"
 
 
 @dataclass

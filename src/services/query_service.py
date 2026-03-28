@@ -100,9 +100,25 @@ class QueryService:
             decision = await self.routing_service.route_query(prompt, next_context)
             log("SERVER", f"Routing decision: {decision.reason}")
 
+            # Bounded search ended, no suitable node found here
+            if decision.no_suitable_node:
+                log("SERVER", "Routing decision: no suitable node found")
+
+                reply = {
+                    "type": "response",
+                    "query_id": query_id,
+                    "status": "no_suitable_node",
+                    "answer": None,
+                }
+                await self.transport.send_message(stream, reply, role="SERVER")
+                log("SERVER", f"Sent no_suitable_node response for query_id={query_id}")
+                return
+
+            # Execute locally
             if decision.execute_locally:
                 log("SERVER", "Routing decision: execute locally")
                 answer = await self.local_agent.generate(prompt)
+            # Forward to another peer
             else:
                 log(
                     "SERVER",
@@ -122,7 +138,32 @@ class QueryService:
                         decision.target_peer_id,
                         rtt_ms=None,
                     )
-                    answer = forwarded.answer
+                    # If downstream says no suitable node was found,
+                    # only the entry node should fallback locally.
+                    if forwarded.status == "no_suitable_node":
+                        if context.origin_peer_id == "external-client":
+                            log(
+                                "SERVER",
+                                "No suitable remote node found; entry node falls back locally",
+                            )
+                            answer = await self.local_agent.generate(prompt)
+                        else:
+                            reply = {
+                                "type": "response",
+                                "query_id": query_id,
+                                "status": "no_suitable_node",
+                                "answer": None,
+                            }
+                            await self.transport.send_message(
+                                stream, reply, role="SERVER"
+                            )
+                            log(
+                                "SERVER",
+                                f"Propagated no_suitable_node for query_id={query_id}",
+                            )
+                            return
+                    else:
+                        answer = forwarded.answer
                 else:
                     self.routing_service.peer_registry.mark_peer_unreachable(
                         decision.target_peer_id
@@ -136,6 +177,7 @@ class QueryService:
             reply = {
                 "type": "response",
                 "query_id": query_id,
+                "status": "ok",
                 "answer": answer,
             }
 
@@ -222,6 +264,7 @@ class QueryService:
                     peer_id=str(peer_id),
                     answer=None,
                     error=f"unexpected response type: {reply.get('type')}",
+                    status="error",
                 )
 
             # Check that the response has the same query_id
@@ -231,6 +274,7 @@ class QueryService:
                     peer_id=str(peer_id),
                     answer=None,
                     error="query_id mismatch",
+                    status="error",
                 )
 
             return QueryResult(
@@ -238,6 +282,7 @@ class QueryService:
                 peer_id=str(peer_id),
                 answer=reply.get("answer"),
                 error=None,
+                status=reply.get("status", "ok"),
             )
 
         except trio.TooSlowError:
@@ -247,6 +292,7 @@ class QueryService:
                 peer_id=str(peer_id),
                 answer=None,
                 error=f"timeout after {timeout_s:.2f}s",
+                status="error",
             )
         except Exception as exc:
             log("CLIENT", f"Query failed: {exc}")
@@ -255,6 +301,7 @@ class QueryService:
                 peer_id=str(peer_id),
                 answer=None,
                 error=str(exc),
+                status="error",
             )
         finally:
             if stream is not None:

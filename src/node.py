@@ -88,6 +88,7 @@ class Node:
             self.local_profile,
             self.peer_registry,
             self.dht_service,
+            300 * 1000,  # 5min
             self.health_service,
         )
 
