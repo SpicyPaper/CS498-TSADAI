@@ -43,11 +43,14 @@ class Node:
         capabilities: list[str] | None = None,
         dht_mode: DHTMode = DHTMode.SERVER,
         advertise_address_mode: str = "ipv6_loopback",
+        enable_gossip: bool = False,
     ) -> None:
         self.port = port if port > 0 else find_free_port()
         # List of addresses from which the host will accept incoming connection
         self.listen_addrs = get_available_interfaces(self.port)
         self.advertise_address_mode = advertise_address_mode
+
+        self.enable_gossip = enable_gossip
 
         # Seed is useful for tests
         if seed is not None:
@@ -99,9 +102,15 @@ class Node:
             self.routing_service,
         )
 
-        self.pubsub_service = PubSubService(
-            self.host, self.dht_service, self.peer_registry, self.local_profile.peer_id
-        )
+        self.pubsub_service = None
+
+        if self.enable_gossip:
+            self.pubsub_service = PubSubService(
+                self.host,
+                self.dht_service,
+                self.peer_registry,
+                self.local_profile.peer_id,
+            )
 
     def advertised_addresses(self) -> list[str]:
         """
@@ -163,7 +172,7 @@ class Node:
         log("NODE", f"Registered protocol handler: {PING_PROTOCOL}")
         log("NODE", f"Registered protocol handler: {QUERY_PROTOCOL}")
 
-    async def publish_self(self) -> None:
+    async def refresh_local_profile(self) -> None:
         self.local_profile.addresses = self.advertised_addresses()
         self.local_profile.timestamp_ms = int(time.time() * 1000)
 
@@ -176,17 +185,36 @@ class Node:
             f"ts={self.local_profile.timestamp_ms}",
         )
 
+    async def publish_self_to_dht(self) -> None:
+        await self.refresh_local_profile()
         await self.dht_service.publish_profile(self.local_profile)
         await self.dht_service.advertise_capabilities(self.local_profile)
+
+    async def announce_self_via_gossip(self) -> None:
+        if self.pubsub_service is None:
+            return
+
         await self.pubsub_service.publish_profile_update(
             self.local_profile.peer_id,
             self.local_profile.timestamp_ms,
         )
 
+    async def _start_node_logic(
+        self,
+        bootstrap_addrs: list[str],
+    ) -> None:
+        await connect_to_bootstrap_peers(self.host, bootstrap_addrs)
+
+        await self.publish_self_to_dht()
+
+        if self.enable_gossip:
+            await self.announce_self_via_gossip()
+
+        self.print_addresses()
+        log("NODE", "Node started. Waiting for incoming streams...")
+        await trio.sleep_forever()
+
     async def run_forever(self, bootstrap_addrs: list[str] | None = None) -> None:
-        """
-        Start the node and keep it running.
-        """
         bootstrap_addrs = bootstrap_addrs or []
         self.local_profile.addresses = self.advertised_addresses()
         self.register_protocol_handlers()
@@ -198,13 +226,17 @@ class Node:
             nursery.start_soon(self.host.get_peerstore().start_cleanup_task, 60)
 
             async with self.dht_service.run():
-                async with self.pubsub_service.run():
-                    nursery.start_soon(self.pubsub_service.run_profile_update_listener)
+                if self.enable_gossip:
+                    if self.pubsub_service is None:
+                        raise RuntimeError(
+                            "Gossip is enabled but PubSubService was not initialized"
+                        )
 
-                    await connect_to_bootstrap_peers(self.host, bootstrap_addrs)
-
-                    await self.publish_self()
-
-                    self.print_addresses()
-                    log("NODE", "Node started. Waiting for incoming streams...")
-                    await trio.sleep_forever()
+                    async with self.pubsub_service.run():
+                        nursery.start_soon(
+                            self.pubsub_service.run_profile_update_listener
+                        )
+                        await self._start_node_logic(bootstrap_addrs)
+                else:
+                    log("GOSSIP", "Gossip disabled")
+                    await self._start_node_logic(bootstrap_addrs)

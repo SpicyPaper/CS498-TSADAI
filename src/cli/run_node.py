@@ -23,6 +23,7 @@ async def async_main(args):
         capabilities=capabilities,
         dht_mode=dht_mode,
         advertise_address_mode=args.advertise_address_mode,
+        enable_gossip=args.enable_gossip,
     )
 
     await node.run_forever(bootstrap_addrs=args.bootstrap)
@@ -36,6 +37,11 @@ def main():
     parser.add_argument("--capabilities", type=str, default="general")
     parser.add_argument("--dht-mode", choices=["server", "client"], default="server")
     parser.add_argument("--bootstrap", nargs="*", default=[])
+    parser.add_argument(
+        "--enable-gossip",
+        action="store_true",
+        help="Run the node with GossipSub. DHT discovery still works.",
+    )
 
     parser.add_argument(
         "--advertise-address-mode",

@@ -80,13 +80,11 @@ class DHTService:
             log("DHT", f"Advertised capability={capability} ok={ok}")
 
     async def find_capability_providers(self, capability: str):
-        providers = await self.dht.find_providers(self.capability_key(capability))
-        log("DHT", f"Found {len(providers)} providers for capability={capability}")
-        return providers
+        return await self.dht.find_providers(self.capability_key(capability))
 
     async def find_capability_provider_ids(self, capability: str) -> list[str]:
         """
-        Return provider peer IDs as strings for a given capability.
+        Return unique provider peer IDs as strings for a given capability.
         """
         providers = await self.find_capability_providers(capability)
 
@@ -99,6 +97,8 @@ class DHTService:
                     peer_ids.append(str(provider.peer_id))
             except Exception:
                 continue
+
+        peer_ids = list(dict.fromkeys(peer_ids))
 
         log(
             "DHT",

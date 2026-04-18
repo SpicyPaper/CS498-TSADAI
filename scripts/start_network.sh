@@ -25,8 +25,6 @@ NETWORK_DIR="$ROOT_DIR/.network"
 LOG_DIR="$NETWORK_DIR/logs"
 
 mkdir -p "$LOG_DIR"
-: > "$NETWORK_DIR/pids.txt"
-: > "$NETWORK_DIR/network_nodes.txt"
 
 # Stop previous network if still running.
 if [ -f "$NETWORK_DIR/pids.txt" ]; then
@@ -35,6 +33,7 @@ if [ -f "$NETWORK_DIR/pids.txt" ]; then
   done < "$NETWORK_DIR/pids.txt"
 fi
 : > "$NETWORK_DIR/pids.txt"
+: > "$NETWORK_DIR/network_nodes.txt"
 
 # Capability pool.
 # Duplicates are intentional so you can have 1-2+ nodes with the same capability.
