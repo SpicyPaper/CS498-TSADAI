@@ -36,18 +36,17 @@ fi
 : > "$NETWORK_DIR/network_nodes.txt"
 
 # Capability pool.
-# Duplicates are intentional so you can have 1-2+ nodes with the same capability.
 CAPS_POOL=(
   "general"
   "math"
-  "code"
-  "general"
-  "math"
-  "code"
-  "general"
-  "reasoning"
-  "general"
+  "programming"
+  "writing"
+  "summarization"
+  "research"
+  "planning"
+  "creative"
 )
+
 
 BASE_PORT=8002
 
@@ -70,7 +69,7 @@ python -m src.cli.run_node \
   --model-name "$MODEL0" \
   --advertise-address-mode ipv6_loopback \
   --agent-backend ollama \
-  --ollama-model "${OLLAMA_MODEL:-qwen3:0.6b}" \
+  --ollama-model "${OLLAMA_MODEL:-qwen3:1.7b}" \
   --ollama-host "${OLLAMA_HOST:-http://localhost:11434}" \
   --ollama-num-predict "${OLLAMA_NUM_PREDICT:-128}" \
   --ollama-system-prompt "$SYSTEM_PROMPT0" \
@@ -114,11 +113,23 @@ for ((i=1; i<NUM_NODES; i++)); do
     math)
       SYSTEM_PROMPT="You are a concise mathematics specialist. Show the key reasoning steps and avoid unsupported claims."
       ;;
-    code)
-      SYSTEM_PROMPT="You are a careful Python programming assistant. Prefer correct, minimal code and mention important assumptions."
+    programming)
+      SYSTEM_PROMPT="You are a careful programming assistant. Prefer correct, minimal code and mention important assumptions."
       ;;
-    reasoning)
-      SYSTEM_PROMPT="You are a logical reasoning specialist. Be structured, concise, and explicit about uncertainty."
+    writing)
+      SYSTEM_PROMPT="You are a writing specialist. Improve clarity, tone, structure, and correctness."
+      ;;
+    summarization)
+      SYSTEM_PROMPT="You are a summarization specialist. Preserve key facts and remove unnecessary detail."
+      ;;
+    research)
+      SYSTEM_PROMPT="You are a research assistant. Be factual, structured, and explicit about uncertainty."
+      ;;
+    planning)
+      SYSTEM_PROMPT="You are a planning specialist. Break goals into clear, practical steps."
+      ;;
+    creative)
+      SYSTEM_PROMPT="You are a creative assistant. Generate vivid, original, coherent ideas."
       ;;
     *)
       SYSTEM_PROMPT="You are a helpful general assistant. Answer clearly and concisely."
@@ -135,7 +146,7 @@ for ((i=1; i<NUM_NODES; i++)); do
     --bootstrap "$ENTRY_ADDR" \
     --advertise-address-mode ipv6_loopback \
     --agent-backend ollama \
-    --ollama-model "${OLLAMA_MODEL:-qwen3:0.6b}" \
+    --ollama-model "${OLLAMA_MODEL:-qwen3:1.7b}" \
     --ollama-host "${OLLAMA_HOST:-http://localhost:11434}" \
     --ollama-num-predict "${OLLAMA_NUM_PREDICT:-128}" \
     --ollama-system-prompt "$SYSTEM_PROMPT" \

@@ -45,6 +45,7 @@ class QueryService:
             visited_peers=list(raw.get("visited_peers", [])),
             hop_count=int(raw.get("hop_count", 0)),
             max_hops=int(raw.get("max_hops", 3)),
+            required_capability=raw.get("required_capability"),
         )
 
     async def handle_stream(self, stream: INetStream) -> None:
@@ -95,6 +96,7 @@ class QueryService:
                 visited_peers=context.visited_peers + [self.host.get_id().to_string()],
                 hop_count=context.hop_count + 1,
                 max_hops=context.max_hops,
+                required_capability=context.required_capability,
             )
 
             decision = await self.routing_service.route_query(prompt, next_context)
@@ -248,6 +250,7 @@ class QueryService:
                         "visited_peers": query_context.visited_peers,
                         "hop_count": query_context.hop_count,
                         "max_hops": query_context.max_hops,
+                        "required_capability": query_context.required_capability,
                     },
                 }
 

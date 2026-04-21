@@ -23,6 +23,7 @@ from src.services.ping_service import PingService
 from src.services.pubsub_service import PubSubService
 from src.services.query_service import QueryService
 from src.services.routing_service import RoutingService
+from src.services.capability_classifier import CAPABILITIES, CapabilityClassifier
 from src.transport import TransportService
 
 
@@ -48,7 +49,7 @@ class Node:
         llm_model_id: str = "Qwen/Qwen3-0.6B",
         llm_max_new_tokens: int = 128,
         llm_enable_thinking: bool = False,
-        ollama_model: str = "qwen3:0.6b",
+        ollama_model: str = "qwen3:1.7b",
         ollama_host: str = "http://localhost:11434",
         ollama_num_predict: int = 128,
         ollama_system_prompt: str | None = None,
@@ -59,6 +60,9 @@ class Node:
         self.advertise_address_mode = advertise_address_mode
 
         self.enable_gossip = enable_gossip
+        self.agent_backend = agent_backend
+        self.ollama_model = ollama_model
+        self.ollama_host = ollama_host
 
         # Seed is useful for tests
         if seed is not None:
@@ -112,6 +116,11 @@ class Node:
             self.local_profile.peer_id,
         )
 
+        capability_classifier = CapabilityClassifier(
+            model=ollama_model,
+            host=ollama_host,
+        )
+
         self.routing_service = RoutingService(
             self.host,
             self.local_profile,
@@ -119,6 +128,7 @@ class Node:
             self.dht_service,
             300 * 1000,  # 5min
             self.health_service,
+            capability_classifier,
         )
 
         self.query_service = QueryService(
@@ -191,6 +201,18 @@ class Node:
         log("NODE", f"I am {self.local_profile.peer_id}")
         log("NODE", f"Model: {self.local_profile.model_name}")
         log("NODE", f"Capabilities: {self.local_profile.capabilities}")
+        log("NODE", f"Agent backend: {self.agent_backend}")
+        if self.agent_backend == "ollama":
+            log(
+                "NODE",
+                f"Ollama answer backend model={self.ollama_model} "
+                f"host={self.ollama_host}",
+            )
+        log(
+            "ROUTING",
+            f"Capability classifier: ollama model={self.ollama_model} "
+            f"host={self.ollama_host} allowed_capabilities={CAPABILITIES}",
+        )
         log("NODE", f"Advertise address mode: {self.advertise_address_mode}")
         log("NODE", "Listening on:")
         for addr in self.local_profile.addresses:

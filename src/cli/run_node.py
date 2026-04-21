@@ -82,7 +82,7 @@ def main():
     parser.add_argument(
         "--ollama-model",
         type=str,
-        default="qwen3:0.6b",
+        default="qwen3:1.7b",
     )
     parser.add_argument(
         "--ollama-host",

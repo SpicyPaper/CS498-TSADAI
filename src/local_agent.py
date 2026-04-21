@@ -87,7 +87,7 @@ class QwenAgent(LocalAgent):
 class OllamaAgent(LocalAgent):
     def __init__(
         self,
-        model: str = "qwen3:0.6b",
+        model: str = "qwen3:1.7b",
         host: str = "http://localhost:11434",
         system_prompt: str | None = None,
         timeout_s: float = 120.0,

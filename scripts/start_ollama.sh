@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:0.6b}"
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:1.7b}"
 OLLAMA_HOST_URL="${OLLAMA_HOST_URL:-http://localhost:11434}"
 
 echo "Checking Ollama..."

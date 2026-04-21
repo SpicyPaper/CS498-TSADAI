@@ -61,3 +61,4 @@ class QueryContext:
     visited_peers: list[str]
     hop_count: int
     max_hops: int
+    required_capability: str | None = None

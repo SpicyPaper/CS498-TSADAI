@@ -8,6 +8,7 @@ from src.models import NodeProfile, QueryContext
 from src.peer_registry import PeerRegistry
 from src.services.dht_service import DHTService
 from src.services.health_service import HealthService
+from src.services.capability_classifier import CapabilityClassifier
 
 EXPLORE_PROBABILITY = 0.20
 
@@ -42,6 +43,7 @@ class RoutingService:
         dht_service: DHTService,
         live_ttl_ms: int,
         health_service: HealthService | None = None,
+        capability_classifier: CapabilityClassifier | None = None,
     ) -> None:
         self.host = host
         self.local_profile = local_profile
@@ -49,18 +51,7 @@ class RoutingService:
         self.dht_service = dht_service
         self.health_service = health_service
         self.live_ttl_ms = live_ttl_ms
-
-    def infer_required_capability(self, prompt: str) -> str:
-        """
-        Very simple capability inference for now.
-        """
-        prompt_lower = prompt.lower()
-
-        if "math" in prompt_lower:
-            return "math"
-        if "code" in prompt_lower or "python" in prompt_lower:
-            return "code"
-        return "general"
+        self.capability_classifier = capability_classifier
 
     async def refresh_candidates_from_dht(self, capability: str) -> None:
         """
@@ -133,7 +124,16 @@ class RoutingService:
         4. random other known peer
         5. fallback local
         """
-        required_capability = self.infer_required_capability(prompt)
+        if context.required_capability is None:
+            if self.capability_classifier is None:
+                raise RuntimeError("Routing requires a capability classifier")
+
+            required_capability = await self.capability_classifier.classify(prompt)
+            log("ROUTING", f"LLM classified query capability={required_capability}")
+
+            context.required_capability = required_capability
+        else:
+            required_capability = context.required_capability
 
         # 1) If local node supports it, execute locally.
         if required_capability in self.local_profile.capabilities:
