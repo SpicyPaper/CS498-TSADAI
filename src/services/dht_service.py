@@ -39,7 +39,7 @@ class DHTService:
     def __init__(self, host: IHost, mode: DHTMode = DHTMode.SERVER) -> None:
         self.host = host
         self.mode = mode
-        self.dht = KadDHT(host, mode)
+        self.dht = KadDHT(host, mode, enable_random_walk=(mode == DHTMode.SERVER))
         self.dht.register_validator(self.PROFILE_NAMESPACE, ProfileValidator())
 
     def profile_key(self, peer_id: str) -> str:

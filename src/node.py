@@ -164,6 +164,17 @@ class Node:
             f"Unsupported advertise_address_mode: {self.advertise_address_mode}"
         )
 
+    async def periodically_publish_self_to_dht(self, interval_s: float = 60.0) -> None:
+        while True:
+            try:
+                await self.publish_self_to_dht()
+                if self.enable_gossip:
+                    await self.announce_self_via_gossip()
+            except Exception as exc:
+                log("DHT", f"Periodic self publish failed: {exc}")
+
+            await trio.sleep(interval_s)
+
     def all_shareable_addresses(self) -> list[str]:
         """
         Returns an array containing all the addresses (address + p2p + peer id)
@@ -249,9 +260,9 @@ class Node:
             self.host.run(listen_addrs=self.listen_addrs),
             trio.open_nursery() as nursery,
         ):
-            nursery.start_soon(self.host.get_peerstore().start_cleanup_task, 60)
-
             async with self.dht_service.run():
+                nursery.start_soon(self.periodically_publish_self_to_dht)
+
                 if self.enable_gossip:
                     if self.pubsub_service is None:
                         raise RuntimeError(
