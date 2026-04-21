@@ -24,6 +24,10 @@ async def async_main(args):
         dht_mode=dht_mode,
         advertise_address_mode=args.advertise_address_mode,
         enable_gossip=args.enable_gossip,
+        agent_backend=args.agent_backend,
+        llm_model_id=args.llm_model_id,
+        llm_max_new_tokens=args.llm_max_new_tokens,
+        llm_enable_thinking=args.llm_enable_thinking,
     )
 
     await node.run_forever(bootstrap_addrs=args.bootstrap)
@@ -31,6 +35,7 @@ async def async_main(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Run one libp2p node.")
+    # General args
     parser.add_argument("-p", "--port", type=int, default=0)
     parser.add_argument("-s", "--seed", type=int, default=None)
     parser.add_argument("--model-name", type=str, default="dummy-model")
@@ -38,16 +43,37 @@ def main():
     parser.add_argument("--dht-mode", choices=["server", "client"], default="server")
     parser.add_argument("--bootstrap", nargs="*", default=[])
     parser.add_argument(
+        "--advertise-address-mode",
+        choices=["ipv6_loopback"],
+        default="ipv6_loopback",
+        help="Which address family/mode to advertise in the node profile.",
+    )
+    parser.add_argument(
         "--enable-gossip",
         action="store_true",
         help="Run the node with GossipSub. DHT discovery still works.",
     )
 
+    # Models args
     parser.add_argument(
-        "--advertise-address-mode",
-        choices=["ipv6_loopback"],
-        default="ipv6_loopback",
-        help="Which address family/mode to advertise in the node profile.",
+        "--agent-backend",
+        choices=["dummy", "qwen"],
+        default="dummy",
+    )
+    parser.add_argument(
+        "--llm-model-id",
+        type=str,
+        default="Qwen/Qwen3-0.6B",
+    )
+    parser.add_argument(
+        "--llm-max-new-tokens",
+        type=int,
+        default=128,
+    )
+    parser.add_argument(
+        "--llm-enable-thinking",
+        action="store_true",
+        help="Enable Qwen3 thinking mode.",
     )
 
     args = parser.parse_args()

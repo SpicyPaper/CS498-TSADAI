@@ -11,7 +11,7 @@ from libp2p.utils.address_validation import (
     get_available_interfaces,
 )
 
-from src.local_agent import DummyAgent
+from src.local_agent import DummyAgent, QwenAgent
 from src.network_utils import connect_to_bootstrap_peers
 from src.logging_utils import log
 from src.models import NodeProfile
@@ -44,6 +44,10 @@ class Node:
         dht_mode: DHTMode = DHTMode.SERVER,
         advertise_address_mode: str = "ipv6_loopback",
         enable_gossip: bool = False,
+        agent_backend: str = "dummy",
+        llm_model_id: str = "Qwen/Qwen3-0.6B",
+        llm_max_new_tokens: int = 128,
+        llm_enable_thinking: bool = False,
     ) -> None:
         self.port = port if port > 0 else find_free_port()
         # List of addresses from which the host will accept incoming connection
@@ -74,7 +78,18 @@ class Node:
         self.local_profile.addresses = self.all_shareable_addresses()
 
         self.peer_registry = PeerRegistry()
-        self.local_agent = DummyAgent()
+
+        # Init the model backend
+        if agent_backend == "dummy":
+            self.local_agent = DummyAgent()
+        elif agent_backend == "qwen":
+            self.local_agent = QwenAgent(
+                model_id=llm_model_id,
+                max_new_tokens=llm_max_new_tokens,
+                enable_thinking=llm_enable_thinking,
+            )
+        else:
+            raise ValueError(f"Unsupported agent_backend: {agent_backend}")
 
         self.ping_service = PingService(self.transport)
 
