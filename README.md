@@ -2,13 +2,14 @@
 
 Trustworthy and Scalable Architectures for Decentralized AI Systems.
 
-Nodes advertise their capabilities through a libp2p Kademlia DHT, discover suitable peers, and forward queries to capable nodes. The default setup uses Ollama with Qwen3 0.6B, while dummy and direct Qwen backends are also available.
+Nodes advertise their capabilities through a libp2p Kademlia DHT, discover suitable peers, and forward queries to capable nodes. The default setup uses Ollama with Qwen3 1.7B, while dummy and direct Qwen backends are also available.
 
 ## Features
 
 - libp2p peer-to-peer networking
 - Kademlia DHT for profile and capability discovery
-- capability routing: `general`, `math`, `code`, `reasoning`
+- capability routing: general, math, programming, writing, summarization, research, planning, creative
+- Ollama-based capability classification at the entry node
 - local peer registry with liveness tracking
 - ping-based health checks
 - optional GossipSub profile updates, disabled by default
@@ -38,7 +39,7 @@ https://ollama.com/download
 Pull the default model:
 
 ```bash
-ollama pull qwen3:0.6b
+ollama pull qwen3:1.7b
 ```
 
 Check that Ollama is running:
@@ -59,6 +60,12 @@ Later for bigger tests more nodes can be started (add OLLAMA_NUM_PREDICT=32 to g
 
 ```bash
 OLLAMA_NUM_PREDICT=32 ./scripts/start_network.sh 50
+```
+
+The default Ollama model can be overridden:
+
+```bash
+OLLAMA_MODEL=qwen3:1.7b ./scripts/start_network.sh 8
 ```
 
 Runtime files are written to:
@@ -100,16 +107,29 @@ python -m src.cli.send_message  low-level ping/query test
 Send a math query through node 0:
 
 ```bash
-./scripts/query_any.sh 0 "math: answer briefly, what is 7 times 8?"
+./scripts/query_any.sh 0 "Solve 2x + 4 = 10."
 ```
 
-Send a code query:
+Send a programming query:
 
 ```bash
 ./scripts/query_any.sh 0 "python: write a function that reverses a list"
 ```
 
-The entry node may answer locally or forward the query to a better capability match.
+The entry node classifies the query capability, then may answer locally or forward the query to a better capability match.
+
+Useful capability test prompts:
+
+```bash
+./scripts/query_any.sh 0 "What is the capital of France?"
+./scripts/query_any.sh 0 "Write a Python function that reverses a list."
+./scripts/query_any.sh 0 "Rewrite this sentence to sound professional: send me the file now."
+./scripts/query_any.sh 0 "Summarize this in one sentence: DHTs distribute records across peers so no central registry is needed."
+./scripts/query_any.sh 0 "Compare DHT and GossipSub briefly."
+./scripts/query_any.sh 0 "Make me a 3-step study plan for distributed systems."
+./scripts/query_any.sh 0 "Write a short sci-fi story about a lost satellite."
+./scripts/query_any.sh 0 "Solve 2x + 4 = 10."
+```
 
 ## Inspect the DHT
 
@@ -142,7 +162,7 @@ python -m src.cli.run_node \
   --bootstrap "<node-0-address>" \
   --advertise-address-mode ipv6_loopback \
   --agent-backend ollama \
-  --ollama-model qwen3:0.6b \
+  --ollama-model qwen3:1.7b \
   --ollama-host http://localhost:11434 \
   --ollama-system-prompt "You are a concise mathematics specialist."
 ```
@@ -164,7 +184,9 @@ qwen
 
 ## Routing Summary
 
-For each query, a node infers the required capability, queries the DHT for providers, caches candidates locally, checks liveness, and forwards to a suitable peer. The DHT returns candidate providers, not necessarily every matching node.
+For each query, the entry node classifies the required capability with Ollama, stores it in the query context, queries the DHT for providers, caches candidates locally, checks liveness, and forwards to a suitable peer. Forwarded nodes reuse the capability from the query context instead of classifying again.
+
+The DHT returns candidate providers, not necessarily every matching node.
 
 ## Debugging
 
