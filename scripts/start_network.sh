@@ -60,6 +60,8 @@ SEED0=1000
 CAP0="general"
 MODEL0="node-0-entry"
 
+SYSTEM_PROMPT0="You are a helpful general assistant. Answer clearly and concisely."
+
 LOG0="$LOG_DIR/node_0.log"
 python -m src.cli.run_node \
   --port "$PORT0" \
@@ -67,6 +69,11 @@ python -m src.cli.run_node \
   --capabilities "$CAP0" \
   --model-name "$MODEL0" \
   --advertise-address-mode ipv6_loopback \
+  --agent-backend ollama \
+  --ollama-model "${OLLAMA_MODEL:-qwen3:0.6b}" \
+  --ollama-host "${OLLAMA_HOST:-http://localhost:11434}" \
+  --ollama-num-predict "${OLLAMA_NUM_PREDICT:-128}" \
+  --ollama-system-prompt "$SYSTEM_PROMPT0" \
   > "$LOG0" 2>&1 &
 
 PID0=$!
@@ -103,6 +110,21 @@ for ((i=1; i<NUM_NODES; i++)); do
   CAP="${CAPS_POOL[$((i % ${#CAPS_POOL[@]}))]}"
   MODEL="node-${i}-${CAP}"
 
+  case "$CAP" in
+    math)
+      SYSTEM_PROMPT="You are a concise mathematics specialist. Show the key reasoning steps and avoid unsupported claims."
+      ;;
+    code)
+      SYSTEM_PROMPT="You are a careful Python programming assistant. Prefer correct, minimal code and mention important assumptions."
+      ;;
+    reasoning)
+      SYSTEM_PROMPT="You are a logical reasoning specialist. Be structured, concise, and explicit about uncertainty."
+      ;;
+    *)
+      SYSTEM_PROMPT="You are a helpful general assistant. Answer clearly and concisely."
+      ;;
+  esac
+
   LOG_FILE="$LOG_DIR/node_${i}.log"
 
   python -m src.cli.run_node \
@@ -112,6 +134,11 @@ for ((i=1; i<NUM_NODES; i++)); do
     --model-name "$MODEL" \
     --bootstrap "$ENTRY_ADDR" \
     --advertise-address-mode ipv6_loopback \
+    --agent-backend ollama \
+    --ollama-model "${OLLAMA_MODEL:-qwen3:0.6b}" \
+    --ollama-host "${OLLAMA_HOST:-http://localhost:11434}" \
+    --ollama-num-predict "${OLLAMA_NUM_PREDICT:-128}" \
+    --ollama-system-prompt "$SYSTEM_PROMPT" \
     > "$LOG_FILE" 2>&1 &
 
   PID=$!

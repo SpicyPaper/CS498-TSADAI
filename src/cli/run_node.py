@@ -28,6 +28,10 @@ async def async_main(args):
         llm_model_id=args.llm_model_id,
         llm_max_new_tokens=args.llm_max_new_tokens,
         llm_enable_thinking=args.llm_enable_thinking,
+        ollama_model=args.ollama_model,
+        ollama_host=args.ollama_host,
+        ollama_num_predict=args.ollama_num_predict,
+        ollama_system_prompt=args.ollama_system_prompt,
     )
 
     await node.run_forever(bootstrap_addrs=args.bootstrap)
@@ -57,7 +61,7 @@ def main():
     # Models args
     parser.add_argument(
         "--agent-backend",
-        choices=["dummy", "qwen"],
+        choices=["dummy", "ollama", "qwen"],
         default="dummy",
     )
     parser.add_argument(
@@ -74,6 +78,26 @@ def main():
         "--llm-enable-thinking",
         action="store_true",
         help="Enable Qwen3 thinking mode.",
+    )
+    parser.add_argument(
+        "--ollama-model",
+        type=str,
+        default="qwen3:0.6b",
+    )
+    parser.add_argument(
+        "--ollama-host",
+        type=str,
+        default="http://localhost:11434",
+    )
+    parser.add_argument(
+        "--ollama-num-predict",
+        type=int,
+        default=128,
+    )
+    parser.add_argument(
+        "--ollama-system-prompt",
+        type=str,
+        default=None,
     )
 
     args = parser.parse_args()

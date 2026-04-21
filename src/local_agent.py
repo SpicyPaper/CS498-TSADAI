@@ -1,5 +1,8 @@
 import trio
-import torch
+import json
+import urllib.error
+import urllib.request
+
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from abc import ABC, abstractmethod
@@ -78,4 +81,70 @@ class QwenAgent(LocalAgent):
             skip_special_tokens=True,
         )
 
+        return answer.strip()
+
+
+class OllamaAgent(LocalAgent):
+    def __init__(
+        self,
+        model: str = "qwen3:0.6b",
+        host: str = "http://localhost:11434",
+        system_prompt: str | None = None,
+        timeout_s: float = 120.0,
+        num_predict: int = 128,
+        temperature: float = 0.7,
+        top_p: float = 0.8,
+        think: bool = False,
+    ) -> None:
+        self.model = model
+        self.url = f"{host.rstrip('/')}/api/generate"
+        self.system_prompt = system_prompt
+        self.timeout_s = timeout_s
+        self.num_predict = num_predict
+        self.temperature = temperature
+        self.top_p = top_p
+        self.think = think
+
+    async def generate(self, prompt: str) -> str:
+        return await trio.to_thread.run_sync(self._generate_sync, prompt)
+
+    def _generate_sync(self, prompt: str) -> str:
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "stream": False,
+            "think": self.think,
+            "options": {
+                "num_predict": self.num_predict,
+                "temperature": self.temperature,
+                "top_p": self.top_p,
+            },
+        }
+
+        if self.system_prompt is not None:
+            payload["system"] = self.system_prompt
+
+        data = json.dumps(payload).encode("utf-8")
+
+        request = urllib.request.Request(
+            self.url,
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+                body = response.read().decode("utf-8")
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"Failed to reach Ollama at {self.url}. Is Ollama running?"
+            ) from exc
+
+        result = json.loads(body)
+
+        if "error" in result:
+            raise RuntimeError(f"Ollama error: {result['error']}")
+
+        answer = result.get("response", "")
         return answer.strip()

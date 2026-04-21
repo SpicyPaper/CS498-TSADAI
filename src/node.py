@@ -11,7 +11,7 @@ from libp2p.utils.address_validation import (
     get_available_interfaces,
 )
 
-from src.local_agent import DummyAgent, QwenAgent
+from src.local_agent import DummyAgent, QwenAgent, OllamaAgent
 from src.network_utils import connect_to_bootstrap_peers
 from src.logging_utils import log
 from src.models import NodeProfile
@@ -48,6 +48,10 @@ class Node:
         llm_model_id: str = "Qwen/Qwen3-0.6B",
         llm_max_new_tokens: int = 128,
         llm_enable_thinking: bool = False,
+        ollama_model: str = "qwen3:0.6b",
+        ollama_host: str = "http://localhost:11434",
+        ollama_num_predict: int = 128,
+        ollama_system_prompt: str | None = None,
     ) -> None:
         self.port = port if port > 0 else find_free_port()
         # List of addresses from which the host will accept incoming connection
@@ -82,6 +86,13 @@ class Node:
         # Init the model backend
         if agent_backend == "dummy":
             self.local_agent = DummyAgent()
+        elif agent_backend == "ollama":
+            self.local_agent = OllamaAgent(
+                model=ollama_model,
+                host=ollama_host,
+                system_prompt=ollama_system_prompt,
+                num_predict=ollama_num_predict,
+            )
         elif agent_backend == "qwen":
             self.local_agent = QwenAgent(
                 model_id=llm_model_id,
