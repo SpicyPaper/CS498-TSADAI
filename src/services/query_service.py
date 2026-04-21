@@ -120,58 +120,65 @@ class QueryService:
                 answer = await self.local_agent.generate(prompt)
             # Forward to another peer
             else:
-                log(
-                    "SERVER",
-                    f"Routing decision: forward to peer={decision.target_peer_id}",
-                )
+                answer = None
+                attempt_context = next_context
 
-                forwarded = await self.query_peer(
-                    ID.from_base58(decision.target_peer_id),
-                    prompt=prompt,
-                    timeout_s=10.0,
-                    query_id=query_id,
-                    query_context=next_context,
-                )
-
-                if forwarded.ok:
-                    self.routing_service.peer_registry.mark_peer_alive(
-                        decision.target_peer_id,
-                        rtt_ms=None,
+                for attempt in range(3):
+                    log(
+                        "SERVER",
+                        f"Routing decision: forward to peer={decision.target_peer_id} "
+                        f"attempt={attempt + 1}",
                     )
-                    # If downstream says no suitable node was found,
-                    # only the entry node should fallback locally.
-                    if forwarded.status == "no_suitable_node":
-                        if context.origin_peer_id == "external-client":
-                            log(
-                                "SERVER",
-                                "No suitable remote node found; entry node falls back locally",
-                            )
-                            answer = await self.local_agent.generate(prompt)
-                        else:
-                            reply = {
-                                "type": "response",
-                                "query_id": query_id,
-                                "status": "no_suitable_node",
-                                "answer": None,
-                            }
-                            await self.transport.send_message(
-                                stream, reply, role="SERVER"
-                            )
-                            log(
-                                "SERVER",
-                                f"Propagated no_suitable_node for query_id={query_id}",
-                            )
-                            return
-                    else:
+
+                    forwarded = await self.query_peer(
+                        ID.from_base58(decision.target_peer_id),
+                        prompt=prompt,
+                        timeout_s=10.0,
+                        query_id=query_id,
+                        query_context=attempt_context,
+                    )
+
+                    if forwarded.ok:
+                        self.routing_service.peer_registry.mark_peer_alive(
+                            decision.target_peer_id,
+                            rtt_ms=None,
+                        )
+
+                        if forwarded.status == "no_suitable_node":
+                            break
+
                         answer = forwarded.answer
-                else:
+                        break
+
                     self.routing_service.peer_registry.mark_peer_unreachable(
                         decision.target_peer_id
                     )
+
                     log(
                         "SERVER",
-                        f"Forwarding failed, fallback to local: {forwarded.error}",
+                        f"Forwarding failed to peer={decision.target_peer_id}: {forwarded.error}",
                     )
+
+                    attempt_context = QueryContext(
+                        origin_peer_id=attempt_context.origin_peer_id,
+                        visited_peers=attempt_context.visited_peers
+                        + [decision.target_peer_id],
+                        hop_count=attempt_context.hop_count,
+                        max_hops=attempt_context.max_hops,
+                    )
+
+                    decision = await self.routing_service.route_query(
+                        prompt, attempt_context
+                    )
+
+                    if decision.no_suitable_node:
+                        break
+
+                    if decision.execute_locally:
+                        break
+
+                if answer is None:
+                    log("SERVER", "No remote candidate succeeded, fallback to local")
                     answer = await self.local_agent.generate(prompt)
 
             reply = {
