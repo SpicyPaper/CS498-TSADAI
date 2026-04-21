@@ -1,51 +1,175 @@
-# cs498-TSADAI
+# CS498 TSADAI
 
-Trustworthy and Scalable Architectures for Decentralized AI Systems
+Trustworthy and Scalable Architectures for Decentralized AI Systems.
 
-# How to use
+Nodes advertise their capabilities through a libp2p Kademlia DHT, discover suitable peers, and forward queries to capable nodes. The default setup uses Ollama with Qwen3 0.6B, while dummy and direct Qwen backends are also available.
 
-Install Python version >=3.13
+## Features
 
-Install UV: https://docs.astral.sh/uv/guides/projects/
+- libp2p peer-to-peer networking
+- Kademlia DHT for profile and capability discovery
+- capability routing: `general`, `math`, `code`, `reasoning`
+- local peer registry with liveness tracking
+- ping-based health checks
+- optional GossipSub profile updates, disabled by default
+- dummy, Ollama, and direct Qwen agent backends
+- local network scripts and DHT inspection CLI
 
-`pip install uv`
+## Requirements
 
-Install dependencies through UV:
+- Python >= 3.13
+- uv
+- Ollama for the recommended LLM backend
 
-`uv sync`
+## Setup
 
-Activate the virtual env with Windows:
+```bash
+pip install uv
+uv sync
+source .venv/Scripts/activate
+```
 
-`source .venv/Scripts/activate`
+Install Ollama from:
 
-You're ready to use and dev on the project! :D
+```text
+https://ollama.com/download
+```
 
-# Test project
+Pull the default model:
 
-## Basic ping and query tests
+```bash
+ollama pull qwen3:0.6b
+```
 
-- Run the node/server:
+Check that Ollama is running:
 
-`python -m src.cli.run_node`
+```bash
+curl http://localhost:11434/api/tags
+```
 
-- Send a ping to the node/server (replace `<address>` by the one displayed on the node side):
+## Run a Local Network
 
-`python -m src.cli.send_message --mode ping -d <address>`
+Start 5 nodes:
 
-- Send a query to the node/server (replace `<address>` by the one displayed on the node side and `<prompt>` by the prompt you want to send):
+```bash
+./scripts/start_network.sh 5
+```
 
-`python -m src.cli.send_message --mode query --prompt <query> -d <address>`
+Later for bigger tests more nodes can be started (add OLLAMA_NUM_PREDICT=32 to get shorter model output results):
 
-## Basic dummy model with capabilities and DHT test
+```bash
+OLLAMA_NUM_PREDICT=32 ./scripts/start_network.sh 50
+```
 
-- Run the first node:
+Runtime files are written to:
 
-`python -m src.cli.run_node -p 8000 --dht-mode server --model-name bootstrap --capabilities general --advertise-address-mode ipv6_loopback`
+```text
+.network/logs/
+.network/pids.txt
+.network/network_nodes.txt
+```
 
-- Run the second node (replace `<address>` by the one displayed on the first node side):
+Stop the network:
 
-`python -m src.cli.run_node -p 8001 --dht-mode server --model-name math-node --capabilities math --bootstrap <address> --advertise-address-mode ipv6_loopback`
+```bash
+./scripts/stop_network.sh
+```
 
-- Run the third node (replace `<address>` by the one displayed on the first node side):
+## Scripts and CLIs
 
-`python -m src.cli.run_node -p 8002 --dht-mode client --model-name general-node --capabilities general --bootstrap <address> --advertise-address-mode ipv6_loopback`
+Main scripts:
+
+```text
+scripts/start_network.sh   start a local network
+scripts/stop_network.sh    stop the local network
+scripts/query_any.sh       send a query to a node index
+scripts/start_ollama.sh    check Ollama and the default model
+```
+
+Useful CLIs:
+
+```
+python -m src.cli.run_node      run one node manually
+python -m src.cli.client_query  send one query to an entry node
+python -m src.cli.find_nodes    inspect DHT capability providers
+python -m src.cli.send_message  low-level ping/query test
+```
+
+## Send Queries
+
+Send a math query through node 0:
+
+```bash
+./scripts/query_any.sh 0 "math: answer briefly, what is 7 times 8?"
+```
+
+Send a code query:
+
+```bash
+./scripts/query_any.sh 0 "python: write a function that reverses a list"
+```
+
+The entry node may answer locally or forward the query to a better capability match.
+
+## Inspect the DHT
+
+View started nodes:
+
+```bash
+cat .network/network_nodes.txt
+```
+
+Find providers for a capability:
+
+```bash
+python -m src.cli.find_nodes \
+  --bootstrap "$(awk '$1 == 0 {print $5}' .network/network_nodes.txt)" \
+  --capability math
+```
+
+## Manual Node Options
+
+Run one node manually with Ollama:
+(`--bootstrap "<node-0-address>"` can be omitted if it's the first node that you run)
+
+```bash
+python -m src.cli.run_node \
+  --port 8003 \
+  --seed 1001 \
+  --model-name node-1-math \
+  --capabilities math \
+  --dht-mode server \
+  --bootstrap "<node-0-address>" \
+  --advertise-address-mode ipv6_loopback \
+  --agent-backend ollama \
+  --ollama-model qwen3:0.6b \
+  --ollama-host http://localhost:11434 \
+  --ollama-system-prompt "You are a concise mathematics specialist."
+```
+
+Enable GossipSub manually:
+(WIP feature for the moment, do not run with it)
+
+```bash
+--enable-gossip
+```
+
+Available agent backends:
+
+```text
+dummy
+ollama
+qwen
+```
+
+## Routing Summary
+
+For each query, a node infers the required capability, queries the DHT for providers, caches candidates locally, checks liveness, and forwards to a suitable peer. The DHT returns candidate providers, not necessarily every matching node.
+
+## Debugging
+
+To check if there's no processes running on those ports:
+
+```bash
+netstat -ano | grep -E "8002|8003|8004|8005|8006"
+```
