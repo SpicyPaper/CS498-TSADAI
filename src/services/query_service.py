@@ -51,8 +51,6 @@ class QueryService:
         Called automatically when another node opens a stream
         using the ping protocol.
         """
-        log("SERVER", "Incoming query stream from remote peer")
-
         try:
             message = await self.transport.receive_message(stream, role="SERVER")
 
@@ -228,7 +226,6 @@ class QueryService:
             log("SERVER", f"Query handler error: {exc}")
             raise
         finally:
-            log("SERVER", "Closing query stream")
             await stream.close()
 
     async def query_peer(
@@ -340,7 +337,6 @@ class QueryService:
         finally:
             if stream is not None:
                 try:
-                    log("CLIENT", "Closing query stream")
                     await stream.close()
                 except Exception:
                     pass
