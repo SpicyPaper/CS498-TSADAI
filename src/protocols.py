@@ -9,3 +9,4 @@ from libp2p.custom_types import TProtocol
 
 PING_PROTOCOL = TProtocol("/tsadai/ping/1.0.0")
 QUERY_PROTOCOL = TProtocol("/tsadai/query/1.0.0")
+RECOMMEND_PROTOCOL = TProtocol("/tsadai/recommend/1.0.0")

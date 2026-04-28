@@ -5,6 +5,7 @@ Start one node and keep it alive.
 import argparse
 import sys
 import traceback
+import json
 
 import trio
 from libp2p.kad_dht.kad_dht import DHTMode
@@ -14,6 +15,9 @@ from src.node import Node
 
 async def async_main(args):
     capabilities = [c.strip() for c in args.capabilities.split(",") if c.strip()]
+    capability_scores = (
+        json.loads(args.capability_scores) if args.capability_scores else None
+    )
 
     dht_mode = DHTMode.SERVER if args.dht_mode == "server" else DHTMode.CLIENT
     node = Node(
@@ -21,6 +25,7 @@ async def async_main(args):
         seed=args.seed,
         model_name=args.model_name,
         capabilities=capabilities,
+        capability_scores=capability_scores,
         dht_mode=dht_mode,
         advertise_address_mode=args.advertise_address_mode,
         enable_gossip=args.enable_gossip,
@@ -56,6 +61,12 @@ def main():
         "--enable-gossip",
         action="store_true",
         help="Run the node with GossipSub. DHT discovery still works.",
+    )
+    parser.add_argument(
+        "--capability-scores",
+        type=str,
+        default="",
+        help='JSON object like {"math":0.85,"programming":0.30}',
     )
 
     # Models args

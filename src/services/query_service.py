@@ -22,7 +22,6 @@ class QueryService:
     - safe forwarding
     - query context propagation
     - loop prevention
-    - max hop bounding
     """
 
     def __init__(
@@ -43,8 +42,6 @@ class QueryService:
         return QueryContext(
             origin_peer_id=raw.get("origin_peer_id", "unknown"),
             visited_peers=list(raw.get("visited_peers", [])),
-            hop_count=int(raw.get("hop_count", 0)),
-            max_hops=int(raw.get("max_hops", 3)),
             required_capability=raw.get("required_capability"),
         )
 
@@ -73,11 +70,7 @@ class QueryService:
             query_id = message.get("query_id")
             context = self._parse_context_from_message(message)
 
-            log(
-                "SERVER",
-                f"Received query query_id={query_id} prompt={prompt!r} "
-                f"hop_count={context.hop_count} visited={context.visited_peers}",
-            )
+            log("SERVER", f"Received query query_id={query_id} prompt={prompt!r} ")
 
             # Detect direct loops.
             if self.host.get_id().to_string() in context.visited_peers:
@@ -94,8 +87,6 @@ class QueryService:
             next_context = QueryContext(
                 origin_peer_id=context.origin_peer_id,
                 visited_peers=context.visited_peers + [self.host.get_id().to_string()],
-                hop_count=context.hop_count + 1,
-                max_hops=context.max_hops,
                 required_capability=context.required_capability,
             )
 
@@ -147,7 +138,20 @@ class QueryService:
                         )
 
                         if forwarded.status == "no_suitable_node":
-                            break
+                            reply = {
+                                "type": "response",
+                                "query_id": query_id,
+                                "status": "no_suitable_node",
+                                "answer": None,
+                            }
+                            await self.transport.send_message(
+                                stream, reply, role="SERVER"
+                            )
+                            log(
+                                "SERVER",
+                                f"Sent no_suitable_node response for query_id={query_id}",
+                            )
+                            return
 
                         answer = forwarded.answer
                         break
@@ -165,8 +169,7 @@ class QueryService:
                         origin_peer_id=attempt_context.origin_peer_id,
                         visited_peers=attempt_context.visited_peers
                         + [decision.target_peer_id],
-                        hop_count=attempt_context.hop_count,
-                        max_hops=attempt_context.max_hops,
+                        required_capability=attempt_context.required_capability,
                     )
 
                     decision = await self.routing_service.route_query(
@@ -174,14 +177,40 @@ class QueryService:
                     )
 
                     if decision.no_suitable_node:
-                        break
+                        reply = {
+                            "type": "response",
+                            "query_id": query_id,
+                            "status": "no_suitable_node",
+                            "answer": None,
+                        }
+                        await self.transport.send_message(stream, reply, role="SERVER")
+                        log(
+                            "SERVER",
+                            f"Sent no_suitable_node response for query_id={query_id}",
+                        )
+                        return
 
                     if decision.execute_locally:
+                        log(
+                            "SERVER",
+                            "Re-routing decision after failure: execute locally",
+                        )
+                        answer = await self.local_agent.generate(prompt)
                         break
 
                 if answer is None:
-                    log("SERVER", "No remote candidate succeeded, fallback to local")
-                    answer = await self.local_agent.generate(prompt)
+                    reply = {
+                        "type": "response",
+                        "query_id": query_id,
+                        "status": "no_suitable_node",
+                        "answer": None,
+                    }
+                    await self.transport.send_message(stream, reply, role="SERVER")
+                    log(
+                        "SERVER",
+                        f"Sent no_suitable_node response for query_id={query_id}",
+                    )
+                    return
 
             reply = {
                 "type": "response",
@@ -218,8 +247,6 @@ class QueryService:
             query_context = QueryContext(
                 origin_peer_id=self.host.get_id().to_string(),
                 visited_peers=[],
-                hop_count=0,
-                max_hops=3,
             )
 
         stream = None
@@ -248,18 +275,12 @@ class QueryService:
                     "query_context": {
                         "origin_peer_id": query_context.origin_peer_id,
                         "visited_peers": query_context.visited_peers,
-                        "hop_count": query_context.hop_count,
-                        "max_hops": query_context.max_hops,
                         "required_capability": query_context.required_capability,
                     },
                 }
 
                 await self.transport.send_message(stream, payload, role="CLIENT")
-                log(
-                    "CLIENT",
-                    f"Query sent to peer={peer_id} query_id={query_id} "
-                    f"hop_count={query_context.hop_count} visited={query_context.visited_peers}",
-                )
+                log("CLIENT", f"Query sent to peer={peer_id} query_id={query_id} ")
 
                 reply = await self.transport.receive_message(stream, role="CLIENT")
                 log(

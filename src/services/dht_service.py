@@ -105,3 +105,23 @@ class DHTService:
             f"Provider ID list for capability={capability}: peer_ids={peer_ids}",
         )
         return peer_ids
+
+    async def fetch_capability_profiles(
+        self,
+        capability: str,
+        exclude_peer_ids: set[str] | None = None,
+    ) -> list[NodeProfile]:
+        exclude_peer_ids = exclude_peer_ids or set()
+
+        provider_ids = await self.find_capability_provider_ids(capability)
+
+        profiles: list[NodeProfile] = []
+        for peer_id in provider_ids:
+            if peer_id in exclude_peer_ids:
+                continue
+
+            profile = await self.get_profile(peer_id)
+            if profile is not None:
+                profiles.append(profile)
+
+        return profiles

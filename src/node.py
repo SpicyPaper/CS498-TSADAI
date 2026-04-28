@@ -16,13 +16,14 @@ from src.network_utils import connect_to_bootstrap_peers
 from src.logging_utils import log
 from src.models import NodeProfile
 from src.peer_registry import PeerRegistry
-from src.protocols import PING_PROTOCOL, QUERY_PROTOCOL
+from src.protocols import PING_PROTOCOL, QUERY_PROTOCOL, RECOMMEND_PROTOCOL
 from src.services.dht_service import DHTService
 from src.services.health_service import HealthService
 from src.services.ping_service import PingService
 from src.services.pubsub_service import PubSubService
 from src.services.query_service import QueryService
 from src.services.routing_service import RoutingService
+from src.services.recommendation_service import RecommendationService
 from src.services.capability_classifier import CAPABILITIES, CapabilityClassifier
 from src.transport import TransportService
 
@@ -42,6 +43,7 @@ class Node:
         seed: int | None = None,
         model_name: str = "dummy-model",
         capabilities: list[str] | None = None,
+        capability_scores: dict[str, float] | None = None,
         dht_mode: DHTMode = DHTMode.SERVER,
         advertise_address_mode: str = "ipv6_loopback",
         enable_gossip: bool = False,
@@ -76,11 +78,17 @@ class Node:
         self.transport = TransportService()
 
         # Create the Profile of the current Node
+        resolved_capabilities = capabilities or ["general"]
+        resolved_scores = capability_scores or {
+            cap: 1.0 for cap in resolved_capabilities
+        }
+
         self.local_profile = NodeProfile(
             peer_id=self.host.get_id().to_string(),
             addresses=[],
             model_name=model_name,
-            capabilities=capabilities or ["general"],
+            capabilities=resolved_capabilities,
+            capability_scores=resolved_scores,
             is_available=True,
         )
         self.local_profile.addresses = self.all_shareable_addresses()
@@ -116,6 +124,14 @@ class Node:
             self.local_profile.peer_id,
         )
 
+        self.recommendation_service = RecommendationService(
+            self.host,
+            self.transport,
+            self.peer_registry,
+            self.local_profile.peer_id,
+            self.dht_service,
+        )
+
         capability_classifier = CapabilityClassifier(
             model=ollama_model,
             host=ollama_host,
@@ -129,6 +145,7 @@ class Node:
             300 * 1000,  # 5min
             self.health_service,
             capability_classifier,
+            self.recommendation_service,
         )
 
         self.query_service = QueryService(
@@ -201,6 +218,7 @@ class Node:
         log("NODE", f"I am {self.local_profile.peer_id}")
         log("NODE", f"Model: {self.local_profile.model_name}")
         log("NODE", f"Capabilities: {self.local_profile.capabilities}")
+        log("NODE", f"Capability scores: {self.local_profile.capability_scores}")
         log("NODE", f"Agent backend: {self.agent_backend}")
         if self.agent_backend == "ollama":
             log(
@@ -227,9 +245,13 @@ class Node:
         Register all stream handlers.
         """
         self.host.set_stream_handler(PING_PROTOCOL, self.ping_service.handle_stream)
-        self.host.set_stream_handler(QUERY_PROTOCOL, self.query_service.handle_stream)
         log("NODE", f"Registered protocol handler: {PING_PROTOCOL}")
+        self.host.set_stream_handler(QUERY_PROTOCOL, self.query_service.handle_stream)
         log("NODE", f"Registered protocol handler: {QUERY_PROTOCOL}")
+        self.host.set_stream_handler(
+            RECOMMEND_PROTOCOL, self.recommendation_service.handle_stream
+        )
+        log("NODE", f"Registered protocol handler: {RECOMMEND_PROTOCOL}")
 
     async def refresh_local_profile(self) -> None:
         self.local_profile.addresses = self.advertised_addresses()

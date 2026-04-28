@@ -13,6 +13,15 @@ set -euo pipefail
 #   .network/network_nodes.txt
 #   .network/logs/node_<i>.log
 
+score_from_seed() {
+  local seed="$1"
+  local offset="$2"
+  awk -v s="$seed" -v o="$offset" 'BEGIN {
+    srand(s + o)
+    printf "%.2f", rand()
+  }'
+}
+
 NUM_NODES="${1:-5}"
 
 if ! [[ "$NUM_NODES" =~ ^[0-9]+$ ]] || [ "$NUM_NODES" -lt 1 ]; then
@@ -58,6 +67,9 @@ PORT0=$BASE_PORT
 SEED0=1000
 CAP0="general"
 MODEL0="node-0-entry"
+GENERAL0=$(score_from_seed "$SEED0" 1)
+GENERAL0=$(awk -v x="$GENERAL0" 'BEGIN { printf "%.2f", 0.45 + x * 0.25 }')
+CAPABILITY_SCORES0="{\"general\":${GENERAL0}}"
 
 SYSTEM_PROMPT0="You are a helpful general assistant. Answer clearly and concisely."
 
@@ -66,6 +78,7 @@ python -m src.cli.run_node \
   --port "$PORT0" \
   --seed "$SEED0" \
   --capabilities "$CAP0" \
+  --capability-scores "$CAPABILITY_SCORES0" \
   --model-name "$MODEL0" \
   --advertise-address-mode ipv6_loopback \
   --agent-backend ollama \
@@ -109,29 +122,45 @@ for ((i=1; i<NUM_NODES; i++)); do
   CAP="${CAPS_POOL[$((i % ${#CAPS_POOL[@]}))]}"
   MODEL="node-${i}-${CAP}"
 
+  MAIN_RAND=$(score_from_seed "$SEED" 1)
+  GENERAL_RAND=$(score_from_seed "$SEED" 2)
+  SECONDARY_RAND=$(score_from_seed "$SEED" 3)
+
+  MAIN_SCORE=$(awk -v x="$MAIN_RAND" 'BEGIN { printf "%.2f", 0.78 + x * 0.17 }')
+  GENERAL_SCORE=$(awk -v x="$GENERAL_RAND" 'BEGIN { printf "%.2f", 0.45 + x * 0.20 }')
+  SECONDARY_SCORE=$(awk -v x="$SECONDARY_RAND" 'BEGIN { printf "%.2f", 0.20 + x * 0.25 }')
+
   case "$CAP" in
     math)
+      CAPABILITY_SCORES="{\"math\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"research\":${SECONDARY_SCORE}}"
       SYSTEM_PROMPT="You are a concise mathematics specialist. Show the key reasoning steps and avoid unsupported claims."
       ;;
     programming)
+      CAPABILITY_SCORES="{\"programming\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"research\":${SECONDARY_SCORE}}"
       SYSTEM_PROMPT="You are a careful programming assistant. Prefer correct, minimal code and mention important assumptions."
       ;;
     writing)
+      CAPABILITY_SCORES="{\"writing\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"summarization\":${SECONDARY_SCORE}}"
       SYSTEM_PROMPT="You are a writing specialist. Improve clarity, tone, structure, and correctness."
       ;;
     summarization)
+      CAPABILITY_SCORES="{\"summarization\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"writing\":${SECONDARY_SCORE}}"
       SYSTEM_PROMPT="You are a summarization specialist. Preserve key facts and remove unnecessary detail."
       ;;
     research)
+      CAPABILITY_SCORES="{\"research\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"writing\":${SECONDARY_SCORE}}"
       SYSTEM_PROMPT="You are a research assistant. Be factual, structured, and explicit about uncertainty."
       ;;
     planning)
+      CAPABILITY_SCORES="{\"planning\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"research\":${SECONDARY_SCORE}}"
       SYSTEM_PROMPT="You are a planning specialist. Break goals into clear, practical steps."
       ;;
     creative)
+      CAPABILITY_SCORES="{\"creative\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"writing\":${SECONDARY_SCORE}}"
       SYSTEM_PROMPT="You are a creative assistant. Generate vivid, original, coherent ideas."
       ;;
     *)
+      CAPABILITY_SCORES="{\"general\":${GENERAL_SCORE}}"
       SYSTEM_PROMPT="You are a helpful general assistant. Answer clearly and concisely."
       ;;
   esac
@@ -142,6 +171,7 @@ for ((i=1; i<NUM_NODES; i++)); do
     --port "$PORT" \
     --seed "$SEED" \
     --capabilities "$CAP" \
+    --capability-scores "$CAPABILITY_SCORES" \
     --model-name "$MODEL" \
     --bootstrap "$ENTRY_ADDR" \
     --advertise-address-mode ipv6_loopback \

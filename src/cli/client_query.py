@@ -78,8 +78,6 @@ async def async_main(args):
                         # as a routable network participant.
                         "origin_peer_id": "external-client",
                         "visited_peers": [],
-                        "hop_count": 0,
-                        "max_hops": 3,
                     },
                 }
 
