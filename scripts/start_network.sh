@@ -9,9 +9,9 @@ set -euo pipefail
 # Other nodes bootstrap to node 0.
 #
 # Outputs:
-#   .network/pids.txt
-#   .network/network_nodes.txt
-#   .network/logs/node_<i>.log
+#   .runtime/state/pids.txt
+#   .runtime/state/network_nodes.txt
+#   .runtime/logs/nodes/node_<i>.log
 
 score_from_seed() {
   local seed="$1"
@@ -30,19 +30,24 @@ if ! [[ "$NUM_NODES" =~ ^[0-9]+$ ]] || [ "$NUM_NODES" -lt 1 ]; then
 fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NETWORK_DIR="$ROOT_DIR/.network"
-LOG_DIR="$NETWORK_DIR/logs"
+RUNTIME_DIR="$ROOT_DIR/.runtime"
+STATE_DIR="$RUNTIME_DIR/state"
+CONFIG_DIR="$RUNTIME_DIR/config"
+LOG_DIR="$RUNTIME_DIR/logs/nodes"
+PID_FILE="$STATE_DIR/pids.txt"
+NETWORK_FILE="$STATE_DIR/network_nodes.txt"
+BOOTSTRAP_FILE="$CONFIG_DIR/bootstrap_nodes.txt"
 
-mkdir -p "$LOG_DIR"
+mkdir -p "$STATE_DIR" "$CONFIG_DIR" "$LOG_DIR"
 
 # Stop previous network if still running.
-if [ -f "$NETWORK_DIR/pids.txt" ]; then
+if [ -f "$PID_FILE" ]; then
   while read -r pid; do
     [ -n "${pid:-}" ] && kill "$pid" 2>/dev/null || true
-  done < "$NETWORK_DIR/pids.txt"
+  done < "$PID_FILE"
 fi
-: > "$NETWORK_DIR/pids.txt"
-: > "$NETWORK_DIR/network_nodes.txt"
+: > "$PID_FILE"
+: > "$NETWORK_FILE"
 
 # Capability pool.
 CAPS_POOL=(
@@ -89,7 +94,7 @@ python -m src.cli.run_node \
   > "$LOG0" 2>&1 &
 
 PID0=$!
-echo "$PID0" >> "$NETWORK_DIR/pids.txt"
+echo "$PID0" >> "$PID_FILE"
 
 echo "Started node 0 (pid=$PID0, port=$PORT0, caps=$CAP0)"
 echo "Waiting for node 0 peer id..."
@@ -109,7 +114,8 @@ if [ -z "$ENTRY_PEER_ID" ]; then
 fi
 
 ENTRY_ADDR="/ip6/::1/tcp/${PORT0}/p2p/${ENTRY_PEER_ID}"
-echo "0 $PORT0 $CAP0 $MODEL0 $ENTRY_ADDR" >> "$NETWORK_DIR/network_nodes.txt"
+echo "0 $PORT0 $CAP0 $MODEL0 $ENTRY_ADDR" >> "$NETWORK_FILE"
+echo "$ENTRY_ADDR" > "$BOOTSTRAP_FILE"
 
 echo "Bootstrap node address:"
 echo "  $ENTRY_ADDR"
@@ -183,7 +189,7 @@ for ((i=1; i<NUM_NODES; i++)); do
     > "$LOG_FILE" 2>&1 &
 
   PID=$!
-  echo "$PID" >> "$NETWORK_DIR/pids.txt"
+  echo "$PID" >> "$PID_FILE"
 
   echo "Started node $i (pid=$PID, port=$PORT, caps=$CAP)"
 
@@ -203,17 +209,17 @@ for ((i=1; i<NUM_NODES; i++)); do
     ADDR="/ip6/::1/tcp/${PORT}/p2p/${PEER_ID}"
   fi
 
-  echo "$i $PORT $CAP $MODEL $ADDR" >> "$NETWORK_DIR/network_nodes.txt"
+  echo "$i $PORT $CAP $MODEL $ADDR" >> "$NETWORK_FILE"
 done
 
 echo
 echo "Network started."
 echo
 echo "Available nodes:"
-column -t "$NETWORK_DIR/network_nodes.txt" || cat "$NETWORK_DIR/network_nodes.txt"
+column -t "$NETWORK_FILE" || cat "$NETWORK_FILE"
 echo
 echo "Logs:"
 echo "  $LOG_DIR"
 echo
 echo "PIDs:"
-echo "  $NETWORK_DIR/pids.txt"
+echo "  $PID_FILE"

@@ -15,9 +15,9 @@ from tkinter import font, ttk
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
-NETWORK_FILE = ROOT_DIR / ".network" / "network_nodes.txt"
-BOOTSTRAP_FILE = ROOT_DIR / ".network" / "bootstrap_nodes.txt"
-CONVERSATIONS_FILE = ROOT_DIR / ".network" / "ui_conversations.json"
+NETWORK_FILE = ROOT_DIR / ".runtime" / "state" / "network_nodes.txt"
+BOOTSTRAP_FILE = ROOT_DIR / ".runtime" / "config" / "bootstrap_nodes.txt"
+CONVERSATIONS_FILE = ROOT_DIR / ".runtime" / "ui" / "conversations.json"
 MAX_CONTEXT_CHARS = 2400
 
 
@@ -85,24 +85,6 @@ def load_network_nodes() -> list[NetworkNode]:
                 address=address,
             )
         )
-    return nodes
-
-
-def legacy_network_nodes() -> list[NetworkNode]:
-    if not NETWORK_FILE.exists():
-        return []
-
-    nodes: list[NetworkNode] = []
-    for line in NETWORK_FILE.read_text(encoding="utf-8").splitlines():
-        parts = line.split()
-        if len(parts) >= 5 and parts[4] != "<unknown-yet>":
-            nodes.append(
-                NetworkNode(
-                    peer_id=peer_id_from_address(parts[4]),
-                    port=parts[1],
-                    address=parts[4],
-                )
-            )
     return nodes
 
 

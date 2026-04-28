@@ -16,7 +16,7 @@ shift
 PROMPT="$*"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NETWORK_FILE="$ROOT_DIR/.network/network_nodes.txt"
+NETWORK_FILE="$ROOT_DIR/.runtime/state/network_nodes.txt"
 
 if [ ! -f "$NETWORK_FILE" ]; then
   echo "Network file not found: $NETWORK_FILE"

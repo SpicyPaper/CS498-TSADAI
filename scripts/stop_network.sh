@@ -2,21 +2,23 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NETWORK_DIR="$ROOT_DIR/.network"
+RUNTIME_DIR="$ROOT_DIR/.runtime"
+STATE_DIR="$RUNTIME_DIR/state"
+PID_FILE="$STATE_DIR/pids.txt"
 
 echo "Stopping network..."
 
 # 1) Try PIDs first if the file exists
-if [ -f "$NETWORK_DIR/pids.txt" ]; then
-  echo "Using .network/pids.txt..."
+if [ -f "$PID_FILE" ]; then
+  echo "Using .runtime/state/pids.txt..."
   while read -r pid; do
     if [ -n "${pid:-}" ]; then
       kill "$pid" 2>/dev/null || true
       taskkill //PID "$pid" //T //F >/dev/null 2>&1 || true
     fi
-  done < "$NETWORK_DIR/pids.txt"
+  done < "$PID_FILE"
 else
-  echo "No .network/pids.txt found"
+  echo "No PID file found"
 fi
 
 # 2) Fallback for Git Bash / Windows:
@@ -37,5 +39,5 @@ $procs | ForEach-Object {
 }
 ' || true
 
-rm -f "$NETWORK_DIR/pids.txt"
+rm -f "$PID_FILE"
 echo "Stopped network."

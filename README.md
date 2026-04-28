@@ -71,9 +71,11 @@ OLLAMA_MODEL=qwen3:1.7b ./scripts/start_network.sh 8
 Runtime files are written to:
 
 ```text
-.network/logs/
-.network/pids.txt
-.network/network_nodes.txt
+.runtime/config/bootstrap_nodes.txt
+.runtime/state/pids.txt
+.runtime/state/network_nodes.txt
+.runtime/logs/nodes/
+.runtime/ui/conversations.json
 ```
 
 Stop the network:
@@ -108,11 +110,12 @@ Simple desktop UI:
 python -m src.ui.chat_app
 ```
 
-The UI reads bootstrap peers from `.network/bootstrap_nodes.txt`, lets you select
+Both UIs read bootstrap peers from `.runtime/config/bootstrap_nodes.txt`, let you select
 an entry node, and sends chat prompts through the same client path as
 `scripts/query_any.sh`. Conversations are saved locally in
-`.network/ui_conversations.json`; the network still receives bounded context for
-the active conversation instead of the full chat history.
+`.runtime/ui/conversations.json`; the network still receives bounded context for
+the active conversation instead of the full chat history. The web UI renders common
+Markdown elements such as headings, lists, inline code, and code blocks.
 
 Bootstrap file format:
 
@@ -120,8 +123,8 @@ Bootstrap file format:
 /ip6/::1/tcp/8002/p2p/<peer-id>
 ```
 
-The first UI run can seed `.network/bootstrap_nodes.txt` from the local
-`.network/network_nodes.txt` file for convenience. After that, the UI uses the
+The first UI run can seed `.runtime/config/bootstrap_nodes.txt` from the local
+`.runtime/state/network_nodes.txt` file for convenience. After that, the UI uses the
 bootstrap file as its entry-node source. DHT discovery remains internal to the
 existing routing path.
 
@@ -159,14 +162,14 @@ Useful capability test prompts:
 View started nodes:
 
 ```bash
-cat .network/network_nodes.txt
+cat .runtime/state/network_nodes.txt
 ```
 
 Find providers for a capability:
 
 ```bash
 python -m src.cli.find_nodes \
-  --bootstrap "$(awk '$1 == 0 {print $5}' .network/network_nodes.txt)" \
+  --bootstrap "$(awk '$1 == 0 {print $5}' .runtime/state/network_nodes.txt)" \
   --capability math
 ```
 
