@@ -10,11 +10,9 @@ async def connect_to_peer(host: IHost, destination_multiaddr: str):
     """
     Connect to a remote peer using its full /p2p/... multiaddr.
     """
-    log("CLIENT", f"Connecting to {destination_multiaddr}")
     maddr = multiaddr.Multiaddr(destination_multiaddr)
     info = info_from_p2p_addr(maddr)
     await host.connect(info)
-    log("CLIENT", f"Connected to peer_id={info.peer_id}")
     return info
 
 

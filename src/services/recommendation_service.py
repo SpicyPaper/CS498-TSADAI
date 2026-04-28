@@ -69,8 +69,6 @@ class RecommendationService:
         return [profile.peer_id for profile in candidates[:limit]]
 
     async def handle_stream(self, stream: INetStream) -> None:
-        log("RECOMMEND", "Incoming recommendation stream from remote peer")
-
         try:
             message = await self.transport.receive_message(stream, role="SERVER")
 
@@ -95,6 +93,13 @@ class RecommendationService:
                 exclude_peer_ids=exclude_peer_ids,
             )
 
+            known_capable_peer_ids = [
+                profile.peer_id
+                for profile in self.peer_registry.all_profiles()
+                if profile.peer_id != self.local_peer_id
+                and capability in profile.capabilities
+            ]
+
             reply = {
                 "type": "recommend_response",
                 "capability": capability,
@@ -105,7 +110,8 @@ class RecommendationService:
             log(
                 "RECOMMEND",
                 f"Recommendation selection capability={capability} "
-                f"known_profiles={len(self.peer_registry.all_profiles())} "
+                f"known_capable_peer_ids={known_capable_peer_ids} "
+                f"excluded_peer_ids={sorted(exclude_peer_ids)} "
                 f"returned={peer_ids}",
             )
 

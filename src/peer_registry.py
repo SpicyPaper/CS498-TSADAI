@@ -32,6 +32,7 @@ class PeerRegistry:
                 "REGISTRY",
                 f"Inserted new profile peer_id={profile.peer_id} "
                 f"model={profile.model_name} caps={profile.capabilities} "
+                f"scores={profile.capability_scores} "
                 f"addresses={profile.addresses} ts={profile.timestamp_ms}",
             )
         else:
@@ -49,11 +50,15 @@ class PeerRegistry:
 
             changed_str = ",".join(changed) if changed else "none"
 
+            if changed == ["timestamp_ms"]:
+                return
+
             log(
                 "REGISTRY",
                 f"Updated profile peer_id={profile.peer_id} "
                 f"changed={changed_str} "
                 f"model={profile.model_name} caps={profile.capabilities} "
+                f"scores={profile.capability_scores} "
                 f"addresses={profile.addresses} ts={profile.timestamp_ms}",
             )
 

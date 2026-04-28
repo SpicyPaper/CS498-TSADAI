@@ -31,8 +31,6 @@ class PingService:
         Called automatically when another node opens a stream
         using the ping protocol.
         """
-        log("SERVER", "Incoming ping stream from remote peer")
-
         try:
             message = await self.transport.receive_message(stream, role="SERVER")
 
@@ -48,8 +46,6 @@ class PingService:
                 await self.transport.send_message(stream, error_payload, role="SERVER")
                 return
 
-            log("SERVER", f"Received ping with nonce={message.get('nonce')}")
-
             reply = {
                 "type": "pong",
                 "nonce": message.get("nonce"),
@@ -58,13 +54,10 @@ class PingService:
 
             await self.transport.send_message(stream, reply, role="SERVER")
 
-            log("SERVER", f"Sent pong with nonce={message.get('nonce')}")
-
         except Exception as exc:
             log("SERVER", f"Ping handler error: {exc}")
             raise
         finally:
-            log("SERVER", "Closing ping stream")
             await stream.close()
 
     async def ping_peer(
@@ -89,10 +82,8 @@ class PingService:
                 }
 
                 await self.transport.send_message(stream, payload, role="CLIENT")
-                log("CLIENT", f"Ping sent to peer={peer_id}")
 
                 reply = await self.transport.receive_message(stream, role="CLIENT")
-                log("CLIENT", f"Pong received from peer={peer_id}")
 
             end = time.perf_counter()
 
@@ -140,7 +131,6 @@ class PingService:
         finally:
             if stream is not None:
                 try:
-                    log("CLIENT", "Closing ping stream")
                     await stream.close()
                 except Exception:
                     pass

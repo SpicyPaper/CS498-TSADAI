@@ -52,11 +52,9 @@ async def async_main(args):
 
     # Listen on one clean local loopback address only.
     listen_addrs = [multiaddr.Multiaddr("/ip6/::1/tcp/0")]
-    print(f"Client peer id: {host.get_id().to_string()}", flush=True)
 
     async with host.run(listen_addrs=listen_addrs):
         info = await connect_to_peer(host, args.entry_node)
-        print(f"Connected to entry node: {info.peer_id}", flush=True)
 
         query_id = str(uuid.uuid4())
         stream = None
@@ -106,7 +104,6 @@ async def async_main(args):
         finally:
             if stream is not None:
                 try:
-                    log("CLIENT", "Closing query stream")
                     await stream.close()
                 except Exception:
                     pass

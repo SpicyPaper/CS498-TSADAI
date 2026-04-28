@@ -70,7 +70,12 @@ class QueryService:
             query_id = message.get("query_id")
             context = self._parse_context_from_message(message)
 
-            log("SERVER", f"Received query query_id={query_id} prompt={prompt!r} ")
+            log(
+                "SERVER",
+                f"Received query query_id={query_id} "
+                f"required_capability={context.required_capability} "
+                f"visited={len(context.visited_peers)} prompt={prompt!r}",
+            )
 
             # Detect direct loops.
             if self.host.get_id().to_string() in context.visited_peers:
@@ -95,8 +100,6 @@ class QueryService:
 
             # Bounded search ended, no suitable node found here
             if decision.no_suitable_node:
-                log("SERVER", "Routing decision: no suitable node found")
-
                 reply = {
                     "type": "response",
                     "query_id": query_id,
@@ -109,7 +112,6 @@ class QueryService:
 
             # Execute locally
             if decision.execute_locally:
-                log("SERVER", "Routing decision: execute locally")
                 answer = await self.local_agent.generate(prompt)
             # Forward to another peer
             else:
@@ -220,7 +222,7 @@ class QueryService:
             }
 
             await self.transport.send_message(stream, reply, role="SERVER")
-            log("SERVER", f"Sent response for query_id={query_id}")
+            log("SERVER", f"Sent response for query_id={query_id} status=ok")
 
         except Exception as exc:
             log("SERVER", f"Query handler error: {exc}")
@@ -285,7 +287,8 @@ class QueryService:
                 reply = await self.transport.receive_message(stream, role="CLIENT")
                 log(
                     "CLIENT",
-                    f"Response received from peer={peer_id} query_id={query_id}",
+                    f"Response received from peer={peer_id} query_id={query_id} "
+                    f"status={reply.get('status', 'ok')}",
                 )
 
             # Check that the response is a response

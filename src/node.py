@@ -193,14 +193,14 @@ class Node:
 
     async def periodically_publish_self_to_dht(self, interval_s: float = 60.0) -> None:
         while True:
+            await trio.sleep(interval_s)
+
             try:
                 await self.publish_self_to_dht()
                 if self.enable_gossip:
                     await self.announce_self_via_gossip()
             except Exception as exc:
                 log("DHT", f"Periodic self publish failed: {exc}")
-
-            await trio.sleep(interval_s)
 
     def all_shareable_addresses(self) -> list[str]:
         """

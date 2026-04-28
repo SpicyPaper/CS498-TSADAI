@@ -172,11 +172,6 @@ class RoutingService:
             passing_candidates.sort(key=lambda item: item[2], reverse=True)
             kind, profile, utility = passing_candidates[0]
 
-            log(
-                "ROUTING",
-                f"Best overall candidate kind={kind} "
-                f"capability={required_capability} utility={utility:.2f}",
-            )
             if kind == "local":
                 return RoutingDecision(
                     execute_locally=True,
@@ -210,6 +205,12 @@ class RoutingService:
             profile.peer_id for profile in direct_capable_candidates
         )
 
+        log(
+            "ROUTING",
+            f"Asking recommendations capability={required_capability} "
+            f"source_peer_ids={[profile.peer_id for profile in recommendation_sources]} "
+            f"excluded_peer_ids={sorted(recommendation_excluded_peer_ids)}",
+        )
         recommendation_groups = await self._get_recommendation_groups(
             recommendation_sources,
             required_capability,
@@ -308,7 +309,6 @@ class RoutingService:
             - 0.07 * failure_score
             - 0.08 * latency_score
         )
-
         utility = max(0.0, min(1.0, utility))
 
         log(
@@ -342,13 +342,7 @@ class RoutingService:
             return None
 
         utility = self._candidate_utility(profile, capability)
-        log(
-            "ROUTING",
-            f"Evaluated remote candidate peer_id={profile.peer_id} "
-            f"capability={capability} "
-            f"quality={profile.capability_scores.get(capability, 0.0):.2f} "
-            f"utility={utility:.2f}",
-        )
+
         return profile, utility
 
     async def _rank_candidates(
