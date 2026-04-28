@@ -102,6 +102,29 @@ python -m src.cli.find_nodes    inspect DHT capability providers
 python -m src.cli.send_message  low-level ping/query test
 ```
 
+Simple desktop UI:
+
+```bash
+python -m src.ui.chat_app
+```
+
+The UI reads bootstrap peers from `.network/bootstrap_nodes.txt`, lets you select
+an entry node, and sends chat prompts through the same client path as
+`scripts/query_any.sh`. Conversations are saved locally in
+`.network/ui_conversations.json`; the network still receives bounded context for
+the active conversation instead of the full chat history.
+
+Bootstrap file format:
+
+```text
+/ip6/::1/tcp/8002/p2p/<peer-id>
+```
+
+The first UI run can seed `.network/bootstrap_nodes.txt` from the local
+`.network/network_nodes.txt` file for convenience. After that, the UI uses the
+bootstrap file as its entry-node source. DHT discovery remains internal to the
+existing routing path.
+
 ## Send Queries
 
 Send a math query through node 0:
