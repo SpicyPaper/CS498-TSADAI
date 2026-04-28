@@ -78,27 +78,15 @@ class RoutingService:
                     f"Discovered new peer from DHT peer_id={profile.peer_id} "
                     f"caps={profile.capabilities} addresses={profile.addresses}",
                 )
-            else:
-                log(
-                    "ROUTING",
-                    f"Refreshed cached peer from DHT peer_id={profile.peer_id} "
-                    f"caps={profile.capabilities} addresses={profile.addresses}",
-                )
 
     async def route_query(self, prompt: str, context: QueryContext) -> RoutingDecision:
         """
         Routing rule:
         1. classify the required capability
-        2. score local execution if the local node supports that capability
-        3. refresh direct capable candidates from the DHT
-        4. probe direct candidates and rank reachable ones by utility
-        5. compare local and direct candidates together and choose the best
-           threshold-passing candidate if one exists
-        6. otherwise ask direct candidates for recommendations
-        7. evaluate recommended candidates round by round
-        8. if no candidate passes the threshold, choose the best valid candidate
-           seen overall
-        9. if no valid candidate exists at all, return no_suitable_node
+        2. search the best candidate for that capability
+        3. if none is found, retry the same search for the general capability
+        4. if still none is found, fallback to local general if available
+        5. otherwise return no_suitable_node
         """
         # Resolve the required capability once and carry it through forwarding
         if context.required_capability is None:
@@ -112,157 +100,60 @@ class RoutingService:
         else:
             required_capability = context.required_capability
 
-        local_is_capable = required_capability in self.local_profile.capabilities
-        local_utility = (
-            self.local_profile.capability_scores.get(required_capability, 0.0)
-            if local_is_capable
-            else None
-        )
-        if local_utility is not None:
-            log(
-                "ROUTING",
-                f"Evaluated local candidate peer_id={self.local_profile.peer_id} "
-                f"capability={required_capability} "
-                f"quality={local_utility:.2f} utility={local_utility:.2f}",
-            )
-
         excluded = set(context.visited_peers)
         excluded.add(self.local_profile.peer_id)
+        used_general_fallback = False
 
-        # Refresh direct providers for the required capability from the DHT
-        await self.refresh_candidates_from_dht(required_capability)
+        best_candidate = await self._search_capability(required_capability, excluded)
 
-        # Build the direct remote candidate set for this capability
-        direct_capable_candidates = [
-            profile
-            for profile in self.peer_registry.all_profiles()
-            if profile.peer_id not in excluded
-            and required_capability in profile.capabilities
-        ]
+        if best_candidate is None and required_capability != "general":
+            used_general_fallback = True
+            log(
+                "ROUTING",
+                f"No candidate found for capability={required_capability}, "
+                f"trying general fallback",
+            )
+            best_candidate = await self._search_capability("general", excluded)
 
-        # Probe direct remote candidates and rank reachable ones by utility
-        ranked_direct_candidates = await self._rank_candidates(
-            direct_capable_candidates,
-            required_capability,
-        )
+        if best_candidate is None:
+            log(
+                "ROUTING",
+                f"No candidate found for capability={required_capability} "
+                f"and no candidate found for general fallback",
+            )
+            return RoutingDecision(
+                execute_locally=False,
+                target_peer_id=None,
+                reason=(
+                    f"no valid candidate found for capability={required_capability} "
+                    f"or general"
+                ),
+                no_suitable_node=True,
+            )
 
-        # Compare local and direct remote candidates together and pick the
-        # best threshold-passing candidate if one already exists
-        evaluated_remote_candidates = list(ranked_direct_candidates)
+        kind, profile, utility, capability_used = best_candidate
 
-        local_candidate = None
-        if local_is_capable and local_utility is not None:
-            local_candidate = ("local", local_utility)
-
-        passing_candidates: list[tuple[str, NodeProfile | None, float]] = []
-
-        if local_candidate is not None and local_candidate[1] >= MIN_UTILITY_THRESHOLD:
-            passing_candidates.append(("local", None, local_candidate[1]))
-
-        for profile, utility in ranked_direct_candidates:
-            if utility >= MIN_UTILITY_THRESHOLD:
-                passing_candidates.append(("remote", profile, utility))
-
-        log(
-            "ROUTING",
-            f"Threshold-passing candidates capability={required_capability} "
-            f"count={len(passing_candidates)} threshold={MIN_UTILITY_THRESHOLD:.2f}",
-        )
-        if passing_candidates:
-            passing_candidates.sort(key=lambda item: item[2], reverse=True)
-            kind, profile, utility = passing_candidates[0]
-
-            if kind == "local":
+        if kind == "local":
+            if used_general_fallback:
                 return RoutingDecision(
                     execute_locally=True,
-                    reason=(
-                        f"local chosen among threshold-passing candidates "
-                        f"capability={required_capability} utility={utility:.2f}"
-                    ),
+                    reason=f"local chosen from general fallback utility={utility:.2f}",
                 )
+            return RoutingDecision(
+                execute_locally=True,
+                reason=(
+                    f"local chosen for capability={capability_used} "
+                    f"utility={utility:.2f}"
+                ),
+            )
 
+        if used_general_fallback:
             return RoutingDecision(
                 execute_locally=False,
                 target_peer_id=profile.peer_id,
                 reason=(
-                    f"forward to best threshold-passing direct peer "
-                    f"capability={required_capability} "
-                    f"quality={profile.capability_scores.get(required_capability, 0.0):.2f} "
-                    f"utility={utility:.2f}"
-                ),
-            )
-
-        best_local = (
-            local_utility if local_is_capable and local_utility is not None else None
-        )
-
-        # Otherwise, ask direct remote candidates for bounded recommendations
-        # and evaluate them round by round
-        recommendation_sources = [profile for profile, _ in ranked_direct_candidates]
-
-        recommendation_excluded_peer_ids = set(excluded)
-        recommendation_excluded_peer_ids.update(
-            profile.peer_id for profile in direct_capable_candidates
-        )
-
-        log(
-            "ROUTING",
-            f"Asking recommendations capability={required_capability} "
-            f"source_peer_ids={[profile.peer_id for profile in recommendation_sources]} "
-            f"excluded_peer_ids={sorted(recommendation_excluded_peer_ids)}",
-        )
-        recommendation_groups = await self._get_recommendation_groups(
-            recommendation_sources,
-            required_capability,
-            excluded_peer_ids=recommendation_excluded_peer_ids,
-        )
-
-        recommended_hit = await self._search_recommendation_rounds(
-            recommendation_groups,
-            required_capability,
-            evaluated_remote_candidates,
-        )
-
-        if recommended_hit is not None:
-            chosen, utility = recommended_hit
-            return RoutingDecision(
-                execute_locally=False,
-                target_peer_id=chosen.peer_id,
-                reason=(
-                    f"forward to recommended peer with capability={required_capability} "
-                    f"quality={chosen.capability_scores.get(required_capability, 0.0):.2f} "
-                    f"utility={utility:.2f}"
-                ),
-            )
-
-        # If nothing passed the threshold, choose the best overall candidate
-        # among all evaluated remote candidates and the optional local candidate
-        overall_candidates: list[tuple[str, NodeProfile | None, float]] = []
-
-        if best_local is not None:
-            overall_candidates.append(("local", None, best_local))
-
-        overall_candidates.extend(
-            ("remote", profile, utility)
-            for profile, utility in evaluated_remote_candidates
-        )
-
-        if not overall_candidates:
-            return RoutingDecision(
-                execute_locally=False,
-                target_peer_id=None,
-                reason=f"no valid candidate found for capability={required_capability}",
-                no_suitable_node=True,
-            )
-
-        overall_candidates.sort(key=lambda item: item[2], reverse=True)
-        kind, profile, utility = overall_candidates[0]
-
-        if kind == "local":
-            return RoutingDecision(
-                execute_locally=True,
-                reason=(
-                    f"local chosen as best overall capability={required_capability} "
+                    f"forward to peer={profile.peer_id} from general fallback "
+                    f"quality={profile.capability_scores.get(capability_used, 0.0):.2f} "
                     f"utility={utility:.2f}"
                 ),
             )
@@ -271,11 +162,111 @@ class RoutingService:
             execute_locally=False,
             target_peer_id=profile.peer_id,
             reason=(
-                f"forward to best overall peer with capability={required_capability} "
-                f"quality={profile.capability_scores.get(required_capability, 0.0):.2f} "
+                f"forward to peer={profile.peer_id} "
+                f"capability={capability_used} "
+                f"quality={profile.capability_scores.get(capability_used, 0.0):.2f} "
                 f"utility={utility:.2f}"
             ),
         )
+
+    async def _search_capability(
+        self,
+        capability: str,
+        excluded_peer_ids: set[str],
+    ) -> tuple[str, NodeProfile | None, float, str] | None:
+        local_is_capable = capability in self.local_profile.capabilities
+        local_utility = (
+            self.local_profile.capability_scores.get(capability, 0.0)
+            if local_is_capable
+            else None
+        )
+        await self.refresh_candidates_from_dht(capability)
+
+        direct_capable_candidates = [
+            profile
+            for profile in self.peer_registry.all_profiles()
+            if profile.peer_id not in excluded_peer_ids
+            and capability in profile.capabilities
+        ]
+
+        log(
+            "ROUTING",
+            f"Scoring candidates capability={capability} "
+            f"local_available={local_utility is not None} "
+            f"direct_count={len(direct_capable_candidates)}",
+        )
+
+        ranked_direct_candidates = await self._rank_candidates(
+            direct_capable_candidates,
+            capability,
+        )
+
+        evaluated_remote_candidates = list(ranked_direct_candidates)
+
+        passing_candidates: list[tuple[str, NodeProfile | None, float]] = []
+
+        if local_utility is not None and local_utility >= MIN_UTILITY_THRESHOLD:
+            passing_candidates.append(("local", None, local_utility))
+
+        for profile, utility in ranked_direct_candidates:
+            if utility >= MIN_UTILITY_THRESHOLD:
+                passing_candidates.append(("remote", profile, utility))
+
+        log(
+            "ROUTING",
+            f"Threshold-passing candidates capability={capability} "
+            f"count={len(passing_candidates)} threshold={MIN_UTILITY_THRESHOLD:.2f}",
+        )
+
+        if passing_candidates:
+            passing_candidates.sort(key=lambda item: item[2], reverse=True)
+            kind, profile, utility = passing_candidates[0]
+            return (kind, profile, utility, capability)
+
+        recommendation_sources = [profile for profile, _ in ranked_direct_candidates]
+        recommendation_excluded_peer_ids = set(excluded_peer_ids)
+        recommendation_excluded_peer_ids.update(
+            profile.peer_id for profile in direct_capable_candidates
+        )
+
+        log(
+            "ROUTING",
+            f"Asking recommendations capability={capability} "
+            f"source_peer_ids={[profile.peer_id for profile in recommendation_sources]} "
+            f"excluded_peer_ids={sorted(recommendation_excluded_peer_ids)}",
+        )
+        recommendation_groups = await self._get_recommendation_groups(
+            recommendation_sources,
+            capability,
+            excluded_peer_ids=recommendation_excluded_peer_ids,
+        )
+
+        recommended_hit = await self._search_recommendation_rounds(
+            recommendation_groups,
+            capability,
+            evaluated_remote_candidates,
+        )
+
+        if recommended_hit is not None:
+            chosen, utility = recommended_hit
+            return ("remote", chosen, utility, capability)
+
+        overall_candidates: list[tuple[str, NodeProfile | None, float]] = []
+
+        if local_utility is not None:
+            overall_candidates.append(("local", None, local_utility))
+
+        overall_candidates.extend(
+            ("remote", profile, utility)
+            for profile, utility in evaluated_remote_candidates
+        )
+
+        if not overall_candidates:
+            return None
+
+        overall_candidates.sort(key=lambda item: item[2], reverse=True)
+        kind, profile, utility = overall_candidates[0]
+        return (kind, profile, utility, capability)
 
     def _candidate_utility(
         self,
