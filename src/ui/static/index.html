@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TSADAI Chat</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="sidebar">
+        <div class="sidebar-header">
+          <h1>TSADAI</h1>
+          <button id="new-chat" type="button">New chat</button>
+        </div>
+        <button id="delete-chat" class="secondary" type="button">Delete chat</button>
+        <nav id="conversation-list" class="conversation-list"></nav>
+      </aside>
+
+      <section class="chat-panel">
+        <header class="topbar">
+          <label>
+            Entry node
+            <select id="node-select"></select>
+          </label>
+          <button id="refresh" class="secondary" type="button">Refresh</button>
+          <span id="status" class="status">Ready</span>
+        </header>
+
+        <section id="messages" class="messages"></section>
+
+        <form id="chat-form" class="composer">
+          <textarea
+            id="prompt"
+            rows="2"
+            placeholder="Ask the network..."
+          ></textarea>
+          <button id="send" type="submit">Send</button>
+        </form>
+      </section>
+    </main>
+
+    <script>
+      window.MathJax = {
+        tex: {
+          inlineMath: [["$", "$"], ["\\(", "\\)"]],
+          displayMath: [["$$", "$$"], ["\\[", "\\]"]]
+        },
+        svg: {
+          fontCache: "global"
+        }
+      };
+    </script>
+    <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

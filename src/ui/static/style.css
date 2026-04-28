@@ -1,0 +1,272 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", Arial, sans-serif;
+  background: #f5f7fb;
+  color: #111827;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  height: 100vh;
+  margin: 0;
+  overflow: hidden;
+}
+
+button,
+select,
+textarea {
+  font: inherit;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.sidebar {
+  background: #eef2f7;
+  border-right: 1px solid #d9e0ea;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  height: 100vh;
+  overflow: hidden;
+  padding: 16px;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0;
+}
+
+button {
+  border: 0;
+  background: #2563eb;
+  color: white;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 8px 12px;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+button.secondary {
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  color: #374151;
+}
+
+.conversation-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.conversation-item {
+  background: transparent;
+  border: 0;
+  color: #111827;
+  display: block;
+  overflow: hidden;
+  padding: 9px 10px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.conversation-item.active {
+  background: #dbeafe;
+}
+
+.chat-panel {
+  display: grid;
+  height: 100vh;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.topbar {
+  align-items: end;
+  background: #f5f7fb;
+  border-bottom: 1px solid #e5e7eb;
+  display: flex;
+  gap: 10px;
+  padding: 14px 18px;
+}
+
+.topbar label {
+  color: #4b5563;
+  display: grid;
+  flex: 1;
+  gap: 5px;
+  max-width: 520px;
+}
+
+select {
+  background: white;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  color: #111827;
+  padding: 8px;
+}
+
+.status {
+  color: #6b7280;
+  margin-left: auto;
+  padding-bottom: 8px;
+}
+
+.messages {
+  background: white;
+  overflow-y: auto;
+  padding: 22px;
+}
+
+.empty {
+  color: #6b7280;
+  margin-top: 12px;
+}
+
+.message {
+  display: flex;
+  flex-direction: column;
+  margin: 0 auto 18px;
+  max-width: 880px;
+  width: 100%;
+}
+
+.message.user {
+  align-items: flex-end;
+}
+
+.message.assistant {
+  align-items: flex-start;
+}
+
+.message-role {
+  color: #4b5563;
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+
+.message-content {
+  border-radius: 10px;
+  line-height: 1.55;
+  max-width: min(760px, 78%);
+  padding: 10px 12px;
+}
+
+.message.user .message-content {
+  background: #2563eb;
+  color: white;
+}
+
+.message.assistant .message-content {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.message.user .message-role {
+  color: #174ea6;
+  text-align: right;
+}
+
+.message-content h1,
+.message-content h2,
+.message-content h3 {
+  margin: 14px 0 8px;
+}
+
+.message-content p {
+  margin: 0 0 10px;
+}
+
+.message-content ul {
+  margin: 6px 0 10px 22px;
+  padding: 0;
+}
+
+.message-content code {
+  background: rgba(17, 24, 39, 0.08);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+.message.user .message-content code {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.math-block {
+  background: rgba(17, 24, 39, 0.06);
+  border-radius: 8px;
+  margin: 8px 0 12px;
+  overflow-x: auto;
+  padding: 10px 12px;
+  text-align: center;
+  white-space: pre-wrap;
+}
+
+.message-content pre {
+  background: #111827;
+  border-radius: 8px;
+  color: #f9fafb;
+  overflow-x: auto;
+  padding: 14px;
+}
+
+.message-content pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+
+.composer {
+  align-items: end;
+  background: #f5f7fb;
+  border-top: 1px solid #e5e7eb;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 14px 18px;
+  position: sticky;
+  bottom: 0;
+}
+
+textarea {
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  min-height: 52px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+@media (max-width: 760px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    max-height: 240px;
+  }
+}

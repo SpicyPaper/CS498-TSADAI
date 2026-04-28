@@ -104,6 +104,18 @@ python -m src.cli.find_nodes    inspect DHT capability providers
 python -m src.cli.send_message  low-level ping/query test
 ```
 
+Simple web UI:
+
+```bash
+python -m src.ui.web_app
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8000
+```
+
 Simple desktop UI:
 
 ```bash
