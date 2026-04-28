@@ -29,7 +29,6 @@ import trio
 from libp2p import new_host
 from libp2p.crypto.secp256k1 import create_new_key_pair
 
-from src.logging_utils import log
 from src.network_utils import connect_to_peer
 from src.protocols import QUERY_PROTOCOL
 from src.transport import TransportService
