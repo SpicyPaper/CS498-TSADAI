@@ -9,9 +9,9 @@ set -euo pipefail
 # Other nodes bootstrap to node 0.
 #
 # Outputs:
-#   .runtime/state/pids.txt
-#   .runtime/state/network_nodes.txt
-#   .runtime/logs/nodes/node_<i>.log
+#   .runtime/nodes/state/pids.txt
+#   .runtime/nodes/state/known_nodes.txt
+#   .runtime/nodes/logs/node_<i>.log
 
 score_from_seed() {
   local seed="$1"
@@ -31,14 +31,16 @@ fi
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME_DIR="$ROOT_DIR/.runtime"
-STATE_DIR="$RUNTIME_DIR/state"
-CONFIG_DIR="$RUNTIME_DIR/config"
-LOG_DIR="$RUNTIME_DIR/logs/nodes"
+NODES_RUNTIME_DIR="$RUNTIME_DIR/nodes"
+WEB_RUNTIME_DIR="$RUNTIME_DIR/web"
+STATE_DIR="$NODES_RUNTIME_DIR/state"
+WEB_CONFIG_DIR="$WEB_RUNTIME_DIR/config"
+LOG_DIR="$NODES_RUNTIME_DIR/logs"
 PID_FILE="$STATE_DIR/pids.txt"
-NETWORK_FILE="$STATE_DIR/network_nodes.txt"
-BOOTSTRAP_FILE="$CONFIG_DIR/bootstrap_nodes.txt"
+NETWORK_FILE="$STATE_DIR/known_nodes.txt"
+WEB_BOOTSTRAP_FILE="$WEB_CONFIG_DIR/bootstrap_nodes.txt"
 
-mkdir -p "$STATE_DIR" "$CONFIG_DIR" "$LOG_DIR"
+mkdir -p "$STATE_DIR" "$WEB_CONFIG_DIR" "$LOG_DIR"
 
 # Stop previous network if still running.
 if [ -f "$PID_FILE" ]; then
@@ -92,7 +94,7 @@ python -m src.cli.run_node \
   --agent-backend ollama \
   --ollama-model "${OLLAMA_MODEL:-qwen3:1.7b}" \
   --ollama-host "${OLLAMA_HOST:-http://localhost:11434}" \
---ollama-timeout "${OLLAMA_TIMEOUT:-300}" \
+  --ollama-timeout "${OLLAMA_TIMEOUT:-300}" \
   --ollama-num-predict "${OLLAMA_NUM_PREDICT:-512}" \
   --ollama-system-prompt "$SYSTEM_PROMPT0" \
   --classifier-timeout "${CLASSIFIER_TIMEOUT:-60}" \

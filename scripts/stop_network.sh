@@ -3,14 +3,14 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME_DIR="$ROOT_DIR/.runtime"
-STATE_DIR="$RUNTIME_DIR/state"
+STATE_DIR="$RUNTIME_DIR/nodes/state"
 PID_FILE="$STATE_DIR/pids.txt"
 
 echo "Stopping network..."
 
 # 1) Try PIDs first if the file exists
 if [ -f "$PID_FILE" ]; then
-  echo "Using .runtime/state/pids.txt..."
+  echo "Using .runtime/nodes/state/pids.txt..."
   while read -r pid; do
     if [ -n "${pid:-}" ]; then
       kill "$pid" 2>/dev/null || true
