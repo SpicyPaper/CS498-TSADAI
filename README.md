@@ -56,10 +56,10 @@ Start 5 nodes:
 ./scripts/start_network.sh 5
 ```
 
-Later for bigger tests more nodes can be started (add OLLAMA_NUM_PREDICT=32 to get shorter model output results):
+Later for bigger tests more nodes can be started (add OLLAMA_NUM_PREDICT=128 to get shorter model output results):
 
 ```bash
-OLLAMA_NUM_PREDICT=32 ./scripts/start_network.sh 50
+OLLAMA_NUM_PREDICT=128 ./scripts/start_network.sh 50
 ```
 
 The default Ollama model can be overridden:
@@ -71,11 +71,25 @@ OLLAMA_MODEL=qwen3:1.7b ./scripts/start_network.sh 8
 Runtime files are written to:
 
 ```text
-.runtime/config/bootstrap_nodes.txt
-.runtime/state/pids.txt
-.runtime/state/network_nodes.txt
-.runtime/logs/nodes/
-.runtime/ui/conversations.json
+.runtime/nodes/state/pids.txt
+.runtime/nodes/state/known_nodes.txt
+.runtime/nodes/logs/node_<i>.log
+.runtime/web/config/bootstrap_nodes.txt
+.runtime/web/conversations.json
+```
+
+For local networks started by the script, each node also exposes a small HTTP
+query API. The libp2p ports start at `8002`; the HTTP API ports start at `9002`.
+The node state file uses this format:
+
+```text
+index libp2p_port capability model multiaddr api_url
+```
+
+The web app calls:
+
+```text
+POST http://127.0.0.1:<api-port>/api/query
 ```
 
 Stop the network:
@@ -104,7 +118,7 @@ python -m src.cli.find_nodes    inspect DHT capability providers
 python -m src.cli.send_message  low-level ping/query test
 ```
 
-Simple web UI:
+FastAPI web gateway and UI:
 
 ```bash
 python -m src.ui.web_app
@@ -116,29 +130,21 @@ Then open:
 http://127.0.0.1:8000
 ```
 
-Simple desktop UI:
-
-```bash
-python -m src.ui.chat_app
-```
-
-Both UIs read bootstrap peers from `.runtime/config/bootstrap_nodes.txt`, let you select
-an entry node, and sends chat prompts through the same client path as
-`scripts/query_any.sh`. Conversations are saved locally in
-`.runtime/ui/conversations.json`; the network still receives bounded context for
+The web UI reads bootstrap entry nodes from `.runtime/web/config/bootstrap_nodes.txt`,
+lets you select one, and sends chat prompts through that node HTTP API.
+Conversations are saved locally in
+`.runtime/web/conversations.json`; the network still receives bounded context for
 the active conversation instead of the full chat history. The web UI renders common
 Markdown elements such as headings, lists, inline code, and code blocks.
 
-Bootstrap file format:
+Web bootstrap file format:
 
 ```text
-/ip6/::1/tcp/8002/p2p/<peer-id>
+http://127.0.0.1:9002
 ```
 
-The first UI run can seed `.runtime/config/bootstrap_nodes.txt` from the local
-`.runtime/state/network_nodes.txt` file for convenience. After that, the UI uses the
-bootstrap file as its entry-node source. DHT discovery remains internal to the
-existing routing path.
+The local network script writes the first node API URL there for convenience.
+DHT discovery remains internal to the existing routing path.
 
 ## Send Queries
 
@@ -174,14 +180,14 @@ Useful capability test prompts:
 View started nodes:
 
 ```bash
-cat .runtime/state/network_nodes.txt
+cat .runtime/nodes/state/known_nodes.txt
 ```
 
 Find providers for a capability:
 
 ```bash
 python -m src.cli.find_nodes \
-  --bootstrap "$(awk '$1 == 0 {print $5}' .runtime/state/network_nodes.txt)" \
+  --bootstrap "$(awk '$1 == 0 {print $5}' .runtime/nodes/state/known_nodes.txt)" \
   --capability math
 ```
 
@@ -193,6 +199,7 @@ Run one node manually with Ollama:
 ```bash
 python -m src.cli.run_node \
   --port 8003 \
+  --api-port 9003 \
   --seed 1001 \
   --model-name node-1-math \
   --capabilities math \
@@ -202,6 +209,10 @@ python -m src.cli.run_node \
   --agent-backend ollama \
   --ollama-model qwen3:1.7b \
   --ollama-host http://localhost:11434 \
+  --ollama-timeout 300 \
+  --classifier-timeout 60 \
+  --query-timeout 330 \
+  --ollama-num-predict 512 \
   --ollama-system-prompt "You are a concise mathematics specialist."
 ```
 
