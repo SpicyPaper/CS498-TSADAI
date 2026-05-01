@@ -169,8 +169,9 @@ function renderNodes() {
   els.nodeSelect.innerHTML = "";
   for (const node of state.nodes) {
     const option = document.createElement("option");
-    option.value = node.address;
+    option.value = node.api_url || "";
     option.textContent = node.label;
+    option.disabled = !node.api_url;
     els.nodeSelect.appendChild(option);
   }
 }
@@ -204,10 +205,20 @@ function renderMessages() {
     const wrapper = document.createElement("article");
     const role = message.role === "User" ? "user" : "assistant";
     wrapper.className = `message ${role}`;
-    wrapper.innerHTML = `
-      <div class="message-role">${role === "user" ? "You" : "TSADAI"}</div>
-      <div class="message-content">${markdownToHtml(message.content)}</div>
-    `;
+    if (message.pending) {
+      wrapper.classList.add("pending");
+      wrapper.innerHTML = `
+        <div class="message-role">TSADAI</div>
+        <div class="message-content pending-content" aria-label="Waiting for network response">
+          <span></span><span></span><span></span>
+        </div>
+      `;
+    } else {
+      wrapper.innerHTML = `
+        <div class="message-role">${role === "user" ? "You" : "TSADAI"}</div>
+        <div class="message-content">${markdownToHtml(message.content)}</div>
+      `;
+    }
     els.messages.appendChild(wrapper);
   }
   els.messages.scrollTop = els.messages.scrollHeight;
@@ -308,6 +319,12 @@ async function sendMessage(event) {
     content: prompt,
     created_at: Date.now() / 1000,
   });
+  conversation.messages.push({
+    role: "Assistant",
+    content: "",
+    pending: true,
+    created_at: Date.now() / 1000,
+  });
   conversation.updated_at = Date.now() / 1000;
   renderConversations();
   renderMessages();
@@ -332,6 +349,12 @@ async function sendMessage(event) {
     renderMessages();
     setStatus("Ready");
   } catch (error) {
+    const pending = conversation.messages.find((message) => message.pending);
+    if (pending) {
+      pending.pending = false;
+      pending.content = error.message;
+    }
+    renderMessages();
     setStatus(error.message);
   } finally {
     els.send.disabled = false;

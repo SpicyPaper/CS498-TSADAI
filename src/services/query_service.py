@@ -15,6 +15,9 @@ from src.services.routing_service import RoutingService
 from src.local_agent import LocalAgent
 
 
+DEFAULT_QUERY_TIMEOUT_S = 330.0
+
+
 class QueryService:
     """
     Query service provides:
@@ -30,11 +33,13 @@ class QueryService:
         transport: TransportService,
         local_agent: LocalAgent,
         routing_service: RoutingService,
+        query_timeout_s: float = DEFAULT_QUERY_TIMEOUT_S,
     ) -> None:
         self.host = host
         self.transport = transport
         self.local_agent = local_agent
         self.routing_service = routing_service
+        self.query_timeout_s = query_timeout_s
 
     def _parse_context_from_message(self, message: dict) -> QueryContext:
         raw = message.get("query_context", {})
@@ -45,11 +50,149 @@ class QueryService:
             required_capability=raw.get("required_capability"),
         )
 
+    async def answer_query(
+        self,
+        prompt: str,
+        query_id: str | None = None,
+        context: QueryContext | None = None,
+    ) -> dict:
+        """
+        Answer one query using the same routing path as the libp2p query protocol.
+
+        This is the core query behavior. It is used by both:
+        - handle_stream, when the query comes from another libp2p node
+        - the optional HTTP API, when the query comes from a UI/client
+        """
+        if query_id is None:
+            query_id = str(uuid.uuid4())
+
+        if context is None:
+            context = QueryContext(
+                origin_peer_id="external-client",
+                visited_peers=[],
+            )
+
+        # Detect direct loops.
+        if self.host.get_id().to_string() in context.visited_peers:
+            return {
+                "type": "response",
+                "query_id": query_id,
+                "status": "routing_error",
+                "answer": "[ROUTING ERROR] Loop detected: local peer already visited.",
+            }
+
+        # Build the context that this node will use / propagate further.
+        next_context = QueryContext(
+            origin_peer_id=context.origin_peer_id,
+            visited_peers=context.visited_peers + [self.host.get_id().to_string()],
+            required_capability=context.required_capability,
+        )
+
+        decision = await self.routing_service.route_query(prompt, next_context)
+        log("SERVER", f"Routing decision: {decision.reason}")
+
+        # Bounded search ended, no suitable node found here.
+        if decision.no_suitable_node:
+            return {
+                "type": "response",
+                "query_id": query_id,
+                "status": "no_suitable_node",
+                "answer": None,
+            }
+
+        # Execute locally.
+        if decision.execute_locally:
+            answer = await self.local_agent.generate(prompt)
+        # Forward to another peer.
+        else:
+            answer = None
+            attempt_context = next_context
+
+            for attempt in range(3):
+                log(
+                    "SERVER",
+                    f"Routing decision: forward to peer={decision.target_peer_id} "
+                    f"attempt={attempt + 1}",
+                )
+
+                forwarded = await self.query_peer(
+                    ID.from_base58(decision.target_peer_id),
+                    prompt=prompt,
+                    timeout_s=self.query_timeout_s,
+                    query_id=query_id,
+                    query_context=attempt_context,
+                )
+
+                if forwarded.ok:
+                    self.routing_service.peer_registry.mark_peer_alive(
+                        decision.target_peer_id,
+                        rtt_ms=None,
+                    )
+
+                    if forwarded.status == "no_suitable_node":
+                        return {
+                            "type": "response",
+                            "query_id": query_id,
+                            "status": "no_suitable_node",
+                            "answer": None,
+                        }
+
+                    answer = forwarded.answer
+                    break
+
+                self.routing_service.peer_registry.mark_peer_unreachable(
+                    decision.target_peer_id
+                )
+                log(
+                    "SERVER",
+                    f"Forwarding failed to peer={decision.target_peer_id}: {forwarded.error}",
+                )
+
+                attempt_context = QueryContext(
+                    origin_peer_id=attempt_context.origin_peer_id,
+                    visited_peers=attempt_context.visited_peers
+                    + [decision.target_peer_id],
+                    required_capability=attempt_context.required_capability,
+                )
+
+                # Ask the existing router again after excluding the failed peer.
+                decision = await self.routing_service.route_query(
+                    prompt, attempt_context
+                )
+
+                if decision.no_suitable_node:
+                    return {
+                        "type": "response",
+                        "query_id": query_id,
+                        "status": "no_suitable_node",
+                        "answer": None,
+                    }
+
+                if decision.execute_locally:
+                    log("SERVER", "Re-routing decision after failure: execute locally")
+                    answer = await self.local_agent.generate(prompt)
+                    break
+
+            if answer is None:
+                return {
+                    "type": "response",
+                    "query_id": query_id,
+                    "status": "no_suitable_node",
+                    "answer": None,
+                }
+
+        return {
+            "type": "response",
+            "query_id": query_id,
+            "status": "ok",
+            "answer": answer,
+        }
+
     async def handle_stream(self, stream: INetStream) -> None:
         """
         Registered on node startup.
         Called automatically when another node opens a stream
-        using the ping protocol.
+        using the query protocol.
         """
         try:
             message = await self.transport.receive_message(stream, role="SERVER")
@@ -75,152 +218,18 @@ class QueryService:
                 f"visited={len(context.visited_peers)} prompt={prompt!r}",
             )
 
-            # Detect direct loops.
-            if self.host.get_id().to_string() in context.visited_peers:
-                answer = "[ROUTING ERROR] Loop detected: local peer already visited."
-                reply = {
-                    "type": "response",
-                    "query_id": query_id,
-                    "answer": answer,
-                }
-                await self.transport.send_message(stream, reply, role="SERVER")
-                return
-
-            # Build the context that this node will use / propagate further.
-            next_context = QueryContext(
-                origin_peer_id=context.origin_peer_id,
-                visited_peers=context.visited_peers + [self.host.get_id().to_string()],
-                required_capability=context.required_capability,
+            reply = await self.answer_query(
+                prompt=prompt,
+                query_id=query_id,
+                context=context,
             )
 
-            decision = await self.routing_service.route_query(prompt, next_context)
-            log("SERVER", f"Routing decision: {decision.reason}")
-
-            # Bounded search ended, no suitable node found here
-            if decision.no_suitable_node:
-                reply = {
-                    "type": "response",
-                    "query_id": query_id,
-                    "status": "no_suitable_node",
-                    "answer": None,
-                }
-                await self.transport.send_message(stream, reply, role="SERVER")
-                log("SERVER", f"Sent no_suitable_node response for query_id={query_id}")
-                return
-
-            # Execute locally
-            if decision.execute_locally:
-                answer = await self.local_agent.generate(prompt)
-            # Forward to another peer
-            else:
-                answer = None
-                attempt_context = next_context
-
-                for attempt in range(3):
-                    log(
-                        "SERVER",
-                        f"Routing decision: forward to peer={decision.target_peer_id} "
-                        f"attempt={attempt + 1}",
-                    )
-
-                    forwarded = await self.query_peer(
-                        ID.from_base58(decision.target_peer_id),
-                        prompt=prompt,
-                        timeout_s=10.0,
-                        query_id=query_id,
-                        query_context=attempt_context,
-                    )
-
-                    if forwarded.ok:
-                        self.routing_service.peer_registry.mark_peer_alive(
-                            decision.target_peer_id,
-                            rtt_ms=None,
-                        )
-
-                        if forwarded.status == "no_suitable_node":
-                            reply = {
-                                "type": "response",
-                                "query_id": query_id,
-                                "status": "no_suitable_node",
-                                "answer": None,
-                            }
-                            await self.transport.send_message(
-                                stream, reply, role="SERVER"
-                            )
-                            log(
-                                "SERVER",
-                                f"Sent no_suitable_node response for query_id={query_id}",
-                            )
-                            return
-
-                        answer = forwarded.answer
-                        break
-
-                    self.routing_service.peer_registry.mark_peer_unreachable(
-                        decision.target_peer_id
-                    )
-
-                    log(
-                        "SERVER",
-                        f"Forwarding failed to peer={decision.target_peer_id}: {forwarded.error}",
-                    )
-
-                    attempt_context = QueryContext(
-                        origin_peer_id=attempt_context.origin_peer_id,
-                        visited_peers=attempt_context.visited_peers
-                        + [decision.target_peer_id],
-                        required_capability=attempt_context.required_capability,
-                    )
-
-                    decision = await self.routing_service.route_query(
-                        prompt, attempt_context
-                    )
-
-                    if decision.no_suitable_node:
-                        reply = {
-                            "type": "response",
-                            "query_id": query_id,
-                            "status": "no_suitable_node",
-                            "answer": None,
-                        }
-                        await self.transport.send_message(stream, reply, role="SERVER")
-                        log(
-                            "SERVER",
-                            f"Sent no_suitable_node response for query_id={query_id}",
-                        )
-                        return
-
-                    if decision.execute_locally:
-                        log(
-                            "SERVER",
-                            "Re-routing decision after failure: execute locally",
-                        )
-                        answer = await self.local_agent.generate(prompt)
-                        break
-
-                if answer is None:
-                    reply = {
-                        "type": "response",
-                        "query_id": query_id,
-                        "status": "no_suitable_node",
-                        "answer": None,
-                    }
-                    await self.transport.send_message(stream, reply, role="SERVER")
-                    log(
-                        "SERVER",
-                        f"Sent no_suitable_node response for query_id={query_id}",
-                    )
-                    return
-
-            reply = {
-                "type": "response",
-                "query_id": query_id,
-                "status": "ok",
-                "answer": answer,
-            }
-
             await self.transport.send_message(stream, reply, role="SERVER")
-            log("SERVER", f"Sent response for query_id={query_id} status=ok")
+            log(
+                "SERVER",
+                f"Sent response for query_id={query_id} "
+                f"status={reply.get('status', 'ok')}",
+            )
 
         except Exception as exc:
             log("SERVER", f"Query handler error: {exc}")
@@ -232,7 +241,7 @@ class QueryService:
         self,
         peer_id: ID,
         prompt: str,
-        timeout_s: float = 10.0,
+        timeout_s: float = DEFAULT_QUERY_TIMEOUT_S,
         query_id: str | None = None,
         query_context: QueryContext | None = None,
     ) -> QueryResult:

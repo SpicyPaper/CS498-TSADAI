@@ -17,10 +17,12 @@ class CapabilityClassifier:
         self,
         model: str = "qwen3:1.7b",
         host: str = "http://localhost:11434",
+        timeout_s: float = 60.0,
     ) -> None:
         self.agent = OllamaAgent(
             model=model,
             host=host,
+            timeout_s=timeout_s,
             system_prompt=(
                 "You are a query router. "
                 "Choose exactly one capability from: general, math, programming, writing, summarization, research, planning, creative. "

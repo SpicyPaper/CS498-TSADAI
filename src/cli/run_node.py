@@ -35,11 +35,18 @@ async def async_main(args):
         llm_enable_thinking=args.llm_enable_thinking,
         ollama_model=args.ollama_model,
         ollama_host=args.ollama_host,
+        ollama_timeout=args.ollama_timeout,
         ollama_num_predict=args.ollama_num_predict,
         ollama_system_prompt=args.ollama_system_prompt,
+        classifier_timeout=args.classifier_timeout,
+        query_timeout=args.query_timeout,
     )
 
-    await node.run_forever(bootstrap_addrs=args.bootstrap)
+    await node.run_forever(
+        bootstrap_addrs=args.bootstrap,
+        api_host=args.api_host,
+        api_port=args.api_port,
+    )
 
 
 def main():
@@ -68,6 +75,30 @@ def main():
         default="",
         help='JSON object like {"math":0.85,"programming":0.30}',
     )
+    parser.add_argument(
+        "--api-host",
+        type=str,
+        default="127.0.0.1",
+        help="HTTP node API host. Used only when --api-port is set.",
+    )
+    parser.add_argument(
+        "--api-port",
+        type=int,
+        default=None,
+        help="Expose this node query API on the given HTTP port.",
+    )
+    parser.add_argument(
+        "--query-timeout",
+        type=float,
+        default=330.0,
+        help="Peer forwarding query timeout in seconds.",
+    )
+    parser.add_argument(
+        "--classifier-timeout",
+        type=float,
+        default=60.0,
+        help="Capability classifier Ollama request timeout in seconds.",
+    )
 
     # Models args
     parser.add_argument(
@@ -83,7 +114,7 @@ def main():
     parser.add_argument(
         "--llm-max-new-tokens",
         type=int,
-        default=128,
+        default=512,
     )
     parser.add_argument(
         "--llm-enable-thinking",
@@ -101,9 +132,15 @@ def main():
         default="http://localhost:11434",
     )
     parser.add_argument(
+        "--ollama-timeout",
+        type=float,
+        default=300.0,
+        help="Ollama request timeout in seconds.",
+    )
+    parser.add_argument(
         "--ollama-num-predict",
         type=int,
-        default=128,
+        default=512,
     )
     parser.add_argument(
         "--ollama-system-prompt",

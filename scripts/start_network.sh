@@ -63,12 +63,14 @@ CAPS_POOL=(
 
 
 BASE_PORT=8002
+API_BASE_PORT=9002
 
 echo "Starting $NUM_NODES nodes..."
 echo
 
 # Start node 0 first so others can bootstrap to it.
 PORT0=$BASE_PORT
+API_PORT0=$API_BASE_PORT
 SEED0=1000
 CAP0="general"
 MODEL0="node-0-entry"
@@ -81,6 +83,7 @@ SYSTEM_PROMPT0="You are a helpful general assistant. Answer clearly and concisel
 LOG0="$LOG_DIR/node_0.log"
 python -m src.cli.run_node \
   --port "$PORT0" \
+  --api-port "$API_PORT0" \
   --seed "$SEED0" \
   --capabilities "$CAP0" \
   --capability-scores "$CAPABILITY_SCORES0" \
@@ -89,14 +92,17 @@ python -m src.cli.run_node \
   --agent-backend ollama \
   --ollama-model "${OLLAMA_MODEL:-qwen3:1.7b}" \
   --ollama-host "${OLLAMA_HOST:-http://localhost:11434}" \
-  --ollama-num-predict "${OLLAMA_NUM_PREDICT:-128}" \
+--ollama-timeout "${OLLAMA_TIMEOUT:-300}" \
+  --ollama-num-predict "${OLLAMA_NUM_PREDICT:-512}" \
   --ollama-system-prompt "$SYSTEM_PROMPT0" \
+  --classifier-timeout "${CLASSIFIER_TIMEOUT:-60}" \
+  --query-timeout "${QUERY_TIMEOUT:-330}" \
   > "$LOG0" 2>&1 &
 
 PID0=$!
 echo "$PID0" >> "$PID_FILE"
 
-echo "Started node 0 (pid=$PID0, port=$PORT0, caps=$CAP0)"
+echo "Started node 0 (pid=$PID0, port=$PORT0, api=$API_PORT0, caps=$CAP0)"
 echo "Waiting for node 0 peer id..."
 
 ENTRY_PEER_ID=""
@@ -114,16 +120,19 @@ if [ -z "$ENTRY_PEER_ID" ]; then
 fi
 
 ENTRY_ADDR="/ip6/::1/tcp/${PORT0}/p2p/${ENTRY_PEER_ID}"
-echo "0 $PORT0 $CAP0 $MODEL0 $ENTRY_ADDR" >> "$NETWORK_FILE"
-echo "$ENTRY_ADDR" > "$BOOTSTRAP_FILE"
+echo "0 $PORT0 $CAP0 $MODEL0 $ENTRY_ADDR http://127.0.0.1:${API_PORT0}" >> "$NETWORK_FILE"
+echo "http://127.0.0.1:${API_PORT0}" > "$WEB_BOOTSTRAP_FILE"
 
 echo "Bootstrap node address:"
 echo "  $ENTRY_ADDR"
+echo "Bootstrap node API:"
+echo "  http://127.0.0.1:${API_PORT0}/api/query"
 echo
 
 # Start remaining nodes.
 for ((i=1; i<NUM_NODES; i++)); do
   PORT=$((BASE_PORT + i))
+  API_PORT=$((API_BASE_PORT + i))
   SEED=$((1000 + i))
   CAP="${CAPS_POOL[$((i % ${#CAPS_POOL[@]}))]}"
   MODEL="node-${i}-${CAP}"
@@ -175,6 +184,7 @@ for ((i=1; i<NUM_NODES; i++)); do
 
   python -m src.cli.run_node \
     --port "$PORT" \
+    --api-port "$API_PORT" \
     --seed "$SEED" \
     --capabilities "$CAP" \
     --capability-scores "$CAPABILITY_SCORES" \
@@ -184,14 +194,17 @@ for ((i=1; i<NUM_NODES; i++)); do
     --agent-backend ollama \
     --ollama-model "${OLLAMA_MODEL:-qwen3:1.7b}" \
     --ollama-host "${OLLAMA_HOST:-http://localhost:11434}" \
-    --ollama-num-predict "${OLLAMA_NUM_PREDICT:-128}" \
+    --ollama-timeout "${OLLAMA_TIMEOUT:-300}" \
+    --ollama-num-predict "${OLLAMA_NUM_PREDICT:-512}" \
     --ollama-system-prompt "$SYSTEM_PROMPT" \
+    --classifier-timeout "${CLASSIFIER_TIMEOUT:-60}" \
+    --query-timeout "${QUERY_TIMEOUT:-330}" \
     > "$LOG_FILE" 2>&1 &
 
   PID=$!
   echo "$PID" >> "$PID_FILE"
 
-  echo "Started node $i (pid=$PID, port=$PORT, caps=$CAP)"
+  echo "Started node $i (pid=$PID, port=$PORT, api=$API_PORT, caps=$CAP)"
 
   PEER_ID=""
   for _ in $(seq 1 50); do
@@ -209,7 +222,7 @@ for ((i=1; i<NUM_NODES; i++)); do
     ADDR="/ip6/::1/tcp/${PORT}/p2p/${PEER_ID}"
   fi
 
-  echo "$i $PORT $CAP $MODEL $ADDR" >> "$NETWORK_FILE"
+  echo "$i $PORT $CAP $MODEL $ADDR http://127.0.0.1:${API_PORT}" >> "$NETWORK_FILE"
 done
 
 echo

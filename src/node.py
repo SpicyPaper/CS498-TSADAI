@@ -14,7 +14,7 @@ from libp2p.utils.address_validation import (
 from src.local_agent import DummyAgent, QwenAgent, OllamaAgent
 from src.network_utils import connect_to_bootstrap_peers
 from src.logging_utils import log
-from src.models import NodeProfile
+from src.models import NodeProfile, QueryContext
 from src.peer_registry import PeerRegistry
 from src.protocols import PING_PROTOCOL, QUERY_PROTOCOL, RECOMMEND_PROTOCOL
 from src.services.dht_service import DHTService
@@ -49,12 +49,15 @@ class Node:
         enable_gossip: bool = False,
         agent_backend: str = "dummy",
         llm_model_id: str = "Qwen/Qwen3-0.6B",
-        llm_max_new_tokens: int = 128,
+        llm_max_new_tokens: int = 512,
         llm_enable_thinking: bool = False,
         ollama_model: str = "qwen3:1.7b",
         ollama_host: str = "http://localhost:11434",
-        ollama_num_predict: int = 128,
+        ollama_timeout: float = 300.0,
+        ollama_num_predict: int = 512,
         ollama_system_prompt: str | None = None,
+        classifier_timeout: float = 60.0,
+        query_timeout: float = 330.0,
     ) -> None:
         self.port = port if port > 0 else find_free_port()
         # List of addresses from which the host will accept incoming connection
@@ -65,6 +68,9 @@ class Node:
         self.agent_backend = agent_backend
         self.ollama_model = ollama_model
         self.ollama_host = ollama_host
+        self.ollama_timeout = ollama_timeout
+        self.classifier_timeout = classifier_timeout
+        self.query_timeout = query_timeout
 
         # Seed is useful for tests
         if seed is not None:
@@ -102,6 +108,7 @@ class Node:
             self.local_agent = OllamaAgent(
                 model=ollama_model,
                 host=ollama_host,
+                timeout_s=ollama_timeout,
                 system_prompt=ollama_system_prompt,
                 num_predict=ollama_num_predict,
             )
@@ -135,6 +142,7 @@ class Node:
         capability_classifier = CapabilityClassifier(
             model=ollama_model,
             host=ollama_host,
+            timeout_s=classifier_timeout,
         )
 
         self.routing_service = RoutingService(
@@ -153,9 +161,12 @@ class Node:
             self.transport,
             self.local_agent,
             self.routing_service,
+            query_timeout_s=query_timeout,
         )
 
         self.pubsub_service = None
+        self._trio_token = None
+        self.api_url: str | None = None
 
         if self.enable_gossip:
             self.pubsub_service = PubSubService(
@@ -224,14 +235,21 @@ class Node:
             log(
                 "NODE",
                 f"Ollama answer backend model={self.ollama_model} "
-                f"host={self.ollama_host}",
+                f"host={self.ollama_host} timeout={self.ollama_timeout:.0f}s",
             )
         log(
             "ROUTING",
             f"Capability classifier: ollama model={self.ollama_model} "
-            f"host={self.ollama_host} allowed_capabilities={CAPABILITIES}",
+            f"host={self.ollama_host} timeout={self.classifier_timeout:.0f}s "
+            f"allowed_capabilities={CAPABILITIES}",
         )
         log("NODE", f"Advertise address mode: {self.advertise_address_mode}")
+        log("NODE", f"Peer query timeout: {self.query_timeout:.0f}s")
+        if self.api_url is not None:
+            log("NODE", f"HTTP API: {self.api_url}")
+            log("NODE", f"HTTP query endpoint: POST {self.api_url}/api/query")
+        else:
+            log("NODE", "HTTP API: disabled")
         log("NODE", "Listening on:")
         for addr in self.local_profile.addresses:
             print(f"  {addr}", flush=True)
@@ -295,8 +313,18 @@ class Node:
         log("NODE", "Node started. Waiting for incoming streams...")
         await trio.sleep_forever()
 
-    async def run_forever(self, bootstrap_addrs: list[str] | None = None) -> None:
+    async def run_forever(
+        self,
+        bootstrap_addrs: list[str] | None = None,
+        api_host: str | None = None,
+        api_port: int | None = None,
+    ) -> None:
         bootstrap_addrs = bootstrap_addrs or []
+        self._trio_token = trio.lowlevel.current_trio_token()
+        if api_port is not None:
+            self.api_url = f"http://{api_host or '127.0.0.1'}:{api_port}"
+        else:
+            self.api_url = None
         self.local_profile.addresses = self.advertised_addresses()
         self.register_protocol_handlers()
 
@@ -306,6 +334,15 @@ class Node:
         ):
             async with self.dht_service.run():
                 nursery.start_soon(self.periodically_publish_self_to_dht)
+                if api_port is not None:
+                    from src.services.node_api_service import NodeAPIService
+
+                    node_api = NodeAPIService(
+                        self,
+                        api_host or "127.0.0.1",
+                        api_port,
+                    )
+                    nursery.start_soon(node_api.run)
 
                 if self.enable_gossip:
                     if self.pubsub_service is None:
@@ -321,3 +358,26 @@ class Node:
                 else:
                     log("GOSSIP", "Gossip disabled")
                     await self._start_node_logic(bootstrap_addrs)
+
+    def answer_query_from_api(
+        self,
+        prompt: str,
+        query_id: str | None = None,
+        required_capability: str | None = None,
+    ) -> dict:
+        if self._trio_token is None:
+            raise RuntimeError("Node is not running yet")
+
+        context = QueryContext(
+            origin_peer_id="http-api",
+            visited_peers=[],
+            required_capability=required_capability,
+        )
+
+        return trio.from_thread.run(
+            self.query_service.answer_query,
+            prompt,
+            query_id,
+            context,
+            trio_token=self._trio_token,
+        )
