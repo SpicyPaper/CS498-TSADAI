@@ -1,5 +1,6 @@
 from contextlib import asynccontextmanager
 
+import trio
 from libp2p.abc import IHost
 from libp2p.kad_dht.kad_dht import DHTMode, KadDHT
 from libp2p.peer.peerinfo import PeerInfo
@@ -8,6 +9,9 @@ from libp2p.tools.async_service import background_trio_service
 
 from src.logging_utils import log
 from src.models import NodeProfile
+
+
+DHT_OPERATION_TIMEOUT_S = 30.0
 
 
 class ProfileValidator(Validator):
@@ -72,31 +76,106 @@ class DHTService:
         if bootstrap_peers:
             await self.refresh_routing_table()
 
-    async def refresh_routing_table(self) -> None:
-        await self.dht.refresh_routing_table()
+    async def refresh_routing_table(
+        self,
+        timeout_s: float = DHT_OPERATION_TIMEOUT_S,
+    ) -> bool:
+        with trio.move_on_after(timeout_s) as cancel_scope:
+            await self.dht.refresh_routing_table()
 
-    async def publish_profile(self, profile: NodeProfile) -> None:
+        if cancel_scope.cancelled_caught:
+            log("DHT", f"Routing table refresh timed out after {timeout_s:.1f}s")
+            return False
+
+        return True
+
+    async def publish_profile(
+        self,
+        profile: NodeProfile,
+        timeout_s: float = DHT_OPERATION_TIMEOUT_S,
+    ) -> bool:
         key = self.profile_key(profile.peer_id)
         value = profile.to_json_bytes()
-        await self.dht.put_value(key, value)
-        log("DHT", f"Published profile key={key}")
 
-    async def get_profile(self, peer_id: str) -> NodeProfile | None:
+        with trio.move_on_after(timeout_s) as cancel_scope:
+            await self.dht.put_value(key, value)
+
+        if cancel_scope.cancelled_caught:
+            log("DHT", f"Publish profile timed out key={key} after {timeout_s:.1f}s")
+            return False
+
+        log("DHT", f"Published profile key={key}")
+        return True
+
+    async def get_profile(
+        self,
+        peer_id: str,
+        timeout_s: float = DHT_OPERATION_TIMEOUT_S,
+    ) -> NodeProfile | None:
         key = self.profile_key(peer_id)
-        raw = await self.dht.get_value(key)
+        raw = None
+
+        with trio.move_on_after(timeout_s) as cancel_scope:
+            raw = await self.dht.get_value(key)
+
+        if cancel_scope.cancelled_caught:
+            log("DHT", f"Get profile timed out key={key} after {timeout_s:.1f}s")
+            return None
+
         if not raw:
             return None
         profile = NodeProfile.from_json_bytes(raw)
         log("DHT", f"Fetched profile for peer_id={peer_id}")
         return profile
 
-    async def advertise_capabilities(self, profile: NodeProfile) -> None:
-        for capability in profile.capabilities:
-            ok = await self.dht.provide(self.capability_key(capability))
-            log("DHT", f"Advertised capability={capability} ok={ok}")
+    async def advertise_capabilities(
+        self,
+        profile: NodeProfile,
+        timeout_s: float = DHT_OPERATION_TIMEOUT_S,
+    ) -> dict[str, bool]:
+        results: dict[str, bool] = {}
 
-    async def find_capability_providers(self, capability: str):
-        return await self.dht.find_providers(self.capability_key(capability))
+        for capability in profile.capabilities:
+            key = self.capability_key(capability)
+            ok = False
+
+            with trio.move_on_after(timeout_s) as cancel_scope:
+                ok = await self.dht.provide(key)
+
+            if cancel_scope.cancelled_caught:
+                log(
+                    "DHT",
+                    f"Advertise capability timed out capability={capability} "
+                    f"after {timeout_s:.1f}s",
+                )
+                results[capability] = False
+                continue
+
+            log("DHT", f"Advertised capability={capability} ok={ok}")
+            results[capability] = ok
+
+        return results
+
+    async def find_capability_providers(
+        self,
+        capability: str,
+        timeout_s: float = DHT_OPERATION_TIMEOUT_S,
+    ):
+        key = self.capability_key(capability)
+        providers = []
+
+        with trio.move_on_after(timeout_s) as cancel_scope:
+            providers = await self.dht.find_providers(key)
+
+        if cancel_scope.cancelled_caught:
+            log(
+                "DHT",
+                f"Find providers timed out capability={capability} "
+                f"after {timeout_s:.1f}s",
+            )
+            return []
+
+        return providers
 
     async def find_capability_provider_ids(self, capability: str) -> list[str]:
         """

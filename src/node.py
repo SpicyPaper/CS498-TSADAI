@@ -28,6 +28,10 @@ from src.services.capability_classifier import CAPABILITIES, CapabilityClassifie
 from src.transport import TransportService
 
 
+PROFILE_REPUBLISH_INTERVAL_S = 5 * 60.0
+CAPABILITY_ADVERTISE_INTERVAL_S = 30 * 60.0
+
+
 class Node:
     """
     Center of logic.
@@ -202,16 +206,31 @@ class Node:
             f"Unsupported advertise_address_mode: {self.advertise_address_mode}"
         )
 
-    async def periodically_publish_self_to_dht(self, interval_s: float = 60.0) -> None:
+    async def periodically_publish_profile_to_dht(
+        self,
+        interval_s: float = PROFILE_REPUBLISH_INTERVAL_S,
+    ) -> None:
         while True:
             await trio.sleep(interval_s)
 
             try:
-                await self.publish_self_to_dht()
+                await self.publish_profile_to_dht()
                 if self.enable_gossip:
                     await self.announce_self_via_gossip()
             except Exception as exc:
-                log("DHT", f"Periodic self publish failed: {exc}")
+                log("DHT", f"Periodic profile publish failed: {exc}")
+
+    async def periodically_advertise_capabilities_to_dht(
+        self,
+        interval_s: float = CAPABILITY_ADVERTISE_INTERVAL_S,
+    ) -> None:
+        while True:
+            await trio.sleep(interval_s)
+
+            try:
+                await self.advertise_capabilities_to_dht()
+            except Exception as exc:
+                log("DHT", f"Periodic capability advertise failed: {exc}")
 
     def all_shareable_addresses(self) -> list[str]:
         """
@@ -284,10 +303,16 @@ class Node:
             f"ts={self.local_profile.timestamp_ms}",
         )
 
-    async def publish_self_to_dht(self) -> None:
+    async def publish_profile_to_dht(self) -> None:
         await self.refresh_local_profile()
         await self.dht_service.publish_profile(self.local_profile)
+
+    async def advertise_capabilities_to_dht(self) -> None:
         await self.dht_service.advertise_capabilities(self.local_profile)
+
+    async def publish_self_to_dht(self) -> None:
+        await self.publish_profile_to_dht()
+        await self.advertise_capabilities_to_dht()
 
     async def announce_self_via_gossip(self) -> None:
         if self.pubsub_service is None:
@@ -337,7 +362,8 @@ class Node:
             trio.open_nursery() as nursery,
         ):
             async with self.dht_service.run():
-                nursery.start_soon(self.periodically_publish_self_to_dht)
+                nursery.start_soon(self.periodically_publish_profile_to_dht)
+                nursery.start_soon(self.periodically_advertise_capabilities_to_dht)
                 if api_port is not None:
                     from src.services.node_api_service import NodeAPIService
 
