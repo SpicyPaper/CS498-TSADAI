@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from libp2p.abc import IHost
 from libp2p.kad_dht.kad_dht import DHTMode, KadDHT
+from libp2p.peer.peerinfo import PeerInfo
 from libp2p.records.validator import Validator
 from libp2p.tools.async_service import background_trio_service
 
@@ -50,14 +51,29 @@ class DHTService:
 
     @asynccontextmanager
     async def run(self):
-        # Add currently known peers to routing table
+        # Seed the DHT with any peers that were already known before startup.
         for peer_id in self.host.get_peerstore().peer_ids():
-            await self.dht.routing_table.add_peer(peer_id)
+            added = await self.dht.add_peer(peer_id)
+            log("DHT", f"Seeded known peer peer_id={peer_id} added={added}")
 
         # Start DHT in background manually
         async with background_trio_service(self.dht):
             log("DHT", f"DHT service started in mode={self.mode}")
             yield self
+
+    async def add_bootstrap_peers(self, bootstrap_peers: list[PeerInfo]) -> None:
+        """
+        Seed the DHT routing table with peers we successfully bootstrapped to.
+        """
+        for info in bootstrap_peers:
+            added = await self.dht.add_peer(info.peer_id)
+            log("DHT", f"Added bootstrap peer peer_id={info.peer_id} added={added}")
+
+        if bootstrap_peers:
+            await self.refresh_routing_table()
+
+    async def refresh_routing_table(self) -> None:
+        await self.dht.refresh_routing_table()
 
     async def publish_profile(self, profile: NodeProfile) -> None:
         key = self.profile_key(profile.peer_id)
@@ -121,7 +137,9 @@ class DHTService:
                 continue
 
             profile = await self.get_profile(peer_id)
-            if profile is not None:
-                profiles.append(profile)
+            if profile is None:
+                continue
+
+            profiles.append(profile)
 
         return profiles

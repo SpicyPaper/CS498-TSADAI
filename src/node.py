@@ -302,7 +302,11 @@ class Node:
         self,
         bootstrap_addrs: list[str],
     ) -> None:
-        await connect_to_bootstrap_peers(self.host, bootstrap_addrs)
+        bootstrap_peers = await connect_to_bootstrap_peers(
+            self.host,
+            bootstrap_addrs,
+        )
+        await self.dht_service.add_bootstrap_peers(bootstrap_peers)
 
         await self.publish_self_to_dht()
 

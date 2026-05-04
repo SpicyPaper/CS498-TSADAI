@@ -41,6 +41,13 @@ class RecommendationService:
         )
 
         for profile in profiles:
+            if not profile.is_available:
+                log(
+                    "RECOMMEND",
+                    f"Ignored unavailable DHT profile peer_id={profile.peer_id}",
+                )
+                continue
+
             self.peer_registry.upsert_profile(profile)
 
     def _select_recommendations(
@@ -55,6 +62,8 @@ class RecommendationService:
             if profile.peer_id == self.local_peer_id:
                 continue
             if profile.peer_id in exclude_peer_ids:
+                continue
+            if not profile.is_available:
                 continue
             if capability not in profile.capabilities:
                 continue

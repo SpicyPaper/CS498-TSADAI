@@ -69,6 +69,13 @@ class RoutingService:
         )
 
         for profile in profiles:
+            if not profile.is_available:
+                log(
+                    "ROUTING",
+                    f"Ignored unavailable DHT profile peer_id={profile.peer_id}",
+                )
+                continue
+
             old_profile = self.peer_registry.get_profile(profile.peer_id)
             self.peer_registry.upsert_profile(profile)
 
@@ -186,6 +193,7 @@ class RoutingService:
             profile
             for profile in self.peer_registry.all_profiles()
             if profile.peer_id not in excluded_peer_ids
+            and profile.is_available
             and capability in profile.capabilities
         ]
 
@@ -389,11 +397,11 @@ class RoutingService:
                 cached = self.peer_registry.get_profile(peer_id)
                 if cached is None and self.dht_service is not None:
                     fetched = await self.dht_service.get_profile(peer_id)
-                    if fetched is not None:
+                    if fetched is not None and fetched.is_available:
                         self.peer_registry.upsert_profile(fetched)
                         cached = fetched
 
-                if cached is not None:
+                if cached is not None and cached.is_available:
                     recommended_profiles.append(cached)
                     excluded_peer_ids.add(peer_id)
 
