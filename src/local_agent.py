@@ -7,6 +7,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from abc import ABC, abstractmethod
 
+from src.ollama_utils import OllamaError, ollama_generate_url
+
 
 class LocalAgent(ABC):
     @abstractmethod
@@ -97,7 +99,8 @@ class OllamaAgent(LocalAgent):
         think: bool = False,
     ) -> None:
         self.model = model
-        self.url = f"{host.rstrip('/')}/api/generate"
+        self.host = host.rstrip("/")
+        self.url = ollama_generate_url(host)
         self.system_prompt = system_prompt
         self.timeout_s = timeout_s
         self.num_predict = num_predict
@@ -136,15 +139,34 @@ class OllamaAgent(LocalAgent):
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
                 body = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            raw = exc.read().decode("utf-8", errors="replace")
+            detail = raw.strip() or str(exc)
+            raise OllamaError(
+                f"Ollama request failed for model {self.model!r} at {self.url}: "
+                f"HTTP {exc.code}. {detail}"
+            ) from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(
-                f"Failed to reach Ollama at {self.url}. Is Ollama running?"
+            reason = getattr(exc, "reason", exc)
+            raise OllamaError(
+                f"Failed to reach Ollama at {self.host}. "
+                "Start Ollama with `ollama serve` or open the Ollama desktop app. "
+                f"Details: {reason}"
             ) from exc
 
-        result = json.loads(body)
+        try:
+            result = json.loads(body)
+        except json.JSONDecodeError as exc:
+            raise OllamaError(
+                f"Ollama returned invalid JSON for model {self.model!r}."
+            ) from exc
 
         if "error" in result:
-            raise RuntimeError(f"Ollama error: {result['error']}")
+            error = str(result["error"])
+            hint = ""
+            if "not found" in error.lower() or "pull" in error.lower():
+                hint = f" Run `ollama pull {self.model}`."
+            raise OllamaError(f"Ollama error for model {self.model!r}: {error}.{hint}")
 
         answer = result.get("response", "")
         return answer.strip()

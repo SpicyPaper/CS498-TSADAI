@@ -10,7 +10,7 @@ import json
 import trio
 from libp2p.kad_dht.kad_dht import DHTMode
 
-from src.node import Node
+from src.ollama_utils import OllamaError, check_ollama_ready
 
 
 async def async_main(args):
@@ -19,7 +19,20 @@ async def async_main(args):
         json.loads(args.capability_scores) if args.capability_scores else None
     )
 
+    if args.agent_backend == "ollama":
+        try:
+            check_ollama_ready(
+                args.ollama_host,
+                args.ollama_model,
+                timeout_s=args.ollama_check_timeout,
+            )
+        except OllamaError as exc:
+            raise RuntimeError(str(exc)) from exc
+
     dht_mode = DHTMode.SERVER if args.dht_mode == "server" else DHTMode.CLIENT
+
+    from src.node import Node
+
     node = Node(
         port=args.port,
         seed=args.seed,
@@ -147,11 +160,20 @@ def main():
         type=str,
         default=None,
     )
+    parser.add_argument(
+        "--ollama-check-timeout",
+        type=float,
+        default=5.0,
+        help="Startup Ollama API check timeout in seconds.",
+    )
 
     args = parser.parse_args()
 
     try:
         trio.run(async_main, args)
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr, flush=True)
+        sys.exit(1)
     except BaseException as exc:
         print("\n=== FULL EXCEPTION ===", file=sys.stderr, flush=True)
         traceback.print_exception(type(exc), exc, exc.__traceback__)

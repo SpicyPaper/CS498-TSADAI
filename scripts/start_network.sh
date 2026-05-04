@@ -66,6 +66,34 @@ CAPS_POOL=(
 
 BASE_PORT=8002
 API_BASE_PORT=9002
+OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:1.7b}"
+OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
+
+echo "Checking Ollama backend..."
+if ! command -v curl >/dev/null 2>&1; then
+  echo "ERROR: curl is required to check the Ollama API before starting nodes."
+  exit 1
+fi
+
+if ! curl -fsS "${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
+  echo "ERROR: Ollama API is not reachable at ${OLLAMA_HOST}."
+  echo "Start it with:"
+  echo "  ollama serve"
+  echo "Or open the Ollama desktop app, then rerun this script."
+  exit 1
+fi
+
+if ! curl -fsS "${OLLAMA_HOST}/api/tags" \
+  | python -c "import json,sys; data=json.load(sys.stdin); names={m.get('name') for m in data.get('models', [])}; sys.exit(0 if '${OLLAMA_MODEL}' in names else 1)" \
+  >/dev/null 2>&1; then
+  echo "ERROR: Ollama is running, but model '${OLLAMA_MODEL}' is not installed."
+  echo "Install it with:"
+  echo "  ollama pull ${OLLAMA_MODEL}"
+  exit 1
+fi
+
+echo "Ollama ready: ${OLLAMA_HOST} model=${OLLAMA_MODEL}"
+echo
 
 echo "Starting $NUM_NODES nodes..."
 echo
@@ -92,8 +120,8 @@ python -m src.cli.run_node \
   --model-name "$MODEL0" \
   --advertise-address-mode ipv6_loopback \
   --agent-backend ollama \
-  --ollama-model "${OLLAMA_MODEL:-qwen3:1.7b}" \
-  --ollama-host "${OLLAMA_HOST:-http://localhost:11434}" \
+  --ollama-model "$OLLAMA_MODEL" \
+  --ollama-host "$OLLAMA_HOST" \
   --ollama-timeout "${OLLAMA_TIMEOUT:-300}" \
   --ollama-num-predict "${OLLAMA_NUM_PREDICT:-512}" \
   --ollama-system-prompt "$SYSTEM_PROMPT0" \
@@ -194,8 +222,8 @@ for ((i=1; i<NUM_NODES; i++)); do
     --bootstrap "$ENTRY_ADDR" \
     --advertise-address-mode ipv6_loopback \
     --agent-backend ollama \
-    --ollama-model "${OLLAMA_MODEL:-qwen3:1.7b}" \
-    --ollama-host "${OLLAMA_HOST:-http://localhost:11434}" \
+    --ollama-model "$OLLAMA_MODEL" \
+    --ollama-host "$OLLAMA_HOST" \
     --ollama-timeout "${OLLAMA_TIMEOUT:-300}" \
     --ollama-num-predict "${OLLAMA_NUM_PREDICT:-512}" \
     --ollama-system-prompt "$SYSTEM_PROMPT" \

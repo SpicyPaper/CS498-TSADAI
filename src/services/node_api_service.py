@@ -53,10 +53,18 @@ class NodeAPIService:
                 status_code=400,
             )
 
-        reply = await run_in_threadpool(
-            self.node.answer_query_from_api,
-            request.prompt,
-            request.query_id,
-            request.required_capability,
-        )
+        try:
+            reply = await run_in_threadpool(
+                self.node.answer_query_from_api,
+                request.prompt,
+                request.query_id,
+                request.required_capability,
+            )
+        except Exception as exc:
+            log("HTTP", f"Query failed: {exc}")
+            return JSONResponse(
+                {"error": str(exc)},
+                status_code=500,
+            )
+
         return reply

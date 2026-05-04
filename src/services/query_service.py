@@ -88,7 +88,16 @@ class QueryService:
             required_capability=context.required_capability,
         )
 
-        decision = await self.routing_service.route_query(prompt, next_context)
+        try:
+            decision = await self.routing_service.route_query(prompt, next_context)
+        except Exception as exc:
+            log("SERVER", f"Routing failed: {exc}")
+            return {
+                "type": "response",
+                "query_id": query_id,
+                "status": "routing_error",
+                "answer": f"[ROUTING ERROR] {exc}",
+            }
         log("SERVER", f"Routing decision: {decision.reason}")
 
         # Bounded search ended, no suitable node found here.
@@ -102,7 +111,16 @@ class QueryService:
 
         # Execute locally.
         if decision.execute_locally:
-            answer = await self.local_agent.generate(prompt)
+            try:
+                answer = await self.local_agent.generate(prompt)
+            except Exception as exc:
+                log("SERVER", f"Local generation failed: {exc}")
+                return {
+                    "type": "response",
+                    "query_id": query_id,
+                    "status": "generation_error",
+                    "answer": f"[GENERATION ERROR] {exc}",
+                }
         # Forward to another peer.
         else:
             answer = None
