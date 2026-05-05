@@ -27,25 +27,23 @@ class CapabilityClassifier:
             host=host,
             timeout_s=timeout_s,
             system_prompt=(
-                "You are a query router. "
-                "Score the useful capabilities for the next answer. "
-                "Allowed capabilities: general, math, programming, writing, summarization, research, planning, creative. "
-                "general = casual conversation, simple facts, broad explanations, everyday advice, ambiguous queries. "
-                "math = arithmetic, equations, calculations, formulas, proofs, probability, statistics. "
-                "programming = code, Python, functions, APIs, scripts, algorithms, debugging, software. "
-                "writing = rewrite, grammar, translation, email, essay, report, documentation prose. "
-                "summarization = summarize, shorten, extract key points, notes, condense provided text. "
-                "research = compare, investigate, explain a topic, background, sources, citations, current facts. "
-                "planning = plan, schedule, roadmap, strategy, checklist, steps, study plan. "
-                "creative = story, poem, joke, brainstorm, names, slogans, characters, dialogue. "
-                "If the query contains a section named 'Current user message:', choose the capability mainly for that current message. "
-                "Use recent context only to resolve follow-ups, references, or ambiguity. "
-                "Do not choose a capability based only on older context if the current user message asks for something different. "
-                "Important priority: if the query asks to write code, a Python function, a script, an API, an algorithm, or mentions a programming language, choose programming, not writing. "
-                "Return only JSON like {\"programming\":0.9,\"math\":0.4}. "
-                "Use scores from 0.0 to 1.0. Include at most three capabilities. "
-                "If uncertain, return {\"general\":0.6}. "
-                "Do not explain."
+                "You classify the user's latest request for routing. "
+                "Return only a JSON object whose keys are capability names and values are need scores from 0.0 to 1.0. "
+                "Choose 1 to 3 capabilities. Use fewer when the request is simple. "
+                "The main capability should usually be between 0.7 and 1.0. Secondary capabilities should usually be between 0.2 and 0.6. "
+                "Allowed capabilities: "
+                "general for casual chat, simple facts, broad explanations, ambiguous requests; "
+                "math for calculations, equations, formulas, proofs, probability, statistics; "
+                "programming for writing, modifying, explaining, or debugging code; Python functions; APIs; scripts; algorithms; software implementation; "
+                "writing for producing or improving non-code prose text: drafting, rewriting, grammar, translation, emails, essays, reports, documentation wording, style, tone; "
+                "summarization for summaries, shortening, extracting key points, condensing text; "
+                "research for comparing, investigating, background information, sources, citations, current facts; "
+                "planning for plans, schedules, roadmaps, strategies, checklists, steps; "
+                "creative for inventing or generating imaginative content: stories, poems, jokes, brainstorming, names, slogans, characters, dialogue, concepts, ideas. "
+                "Resolve overlaps by the requested output: code output is programming; prose output is writing; imaginative output is creative; condensed output is summarization; numeric/formal reasoning is math. "
+                "If the request includes conversation history, classify mainly the latest user message. "
+                "Use general only for broad, casual, or ambiguous requests where no specialized capability clearly fits. "
+                "Output JSON only."
             ),
             num_predict=96,
             temperature=0.0,
@@ -53,7 +51,11 @@ class CapabilityClassifier:
         )
 
     async def classify_scores(self, prompt: str) -> dict[str, float]:
-        raw = await self.agent.generate(f"Query: {prompt}\nCapability:")
+        raw = await self.agent.generate(
+            "Latest user request:\n"
+            f"{prompt}\n\n"
+            "Capability score JSON:"
+        )
 
         scores = self._parse_scores(raw)
         if scores:
@@ -89,6 +91,14 @@ class CapabilityClassifier:
             except (TypeError, ValueError):
                 continue
             scores[capability] = max(0.0, min(1.0, value))
+
+        specialized_scores = {
+            capability: score
+            for capability, score in scores.items()
+            if capability != "general"
+        }
+        if specialized_scores and max(specialized_scores.values()) >= 0.5:
+            scores.pop("general", None)
 
         return dict(
             sorted(
