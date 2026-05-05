@@ -22,9 +22,9 @@ class QueryService:
     """
     Query service provides:
     - local execution
-    - safe forwarding
+    - one-hop forwarding to the selected node
     - query context propagation
-    - loop prevention
+    - rerouting after failed forwards
     """
 
     def __init__(
@@ -43,11 +43,16 @@ class QueryService:
 
     def _parse_context_from_message(self, message: dict) -> QueryContext:
         raw = message.get("query_context", {})
+        excluded_peer_ids = raw.get("excluded_peer_ids", raw.get("visited_peers", []))
+        routed_by_peer_id = raw.get("routed_by_peer_id")
+        if routed_by_peer_id is None and raw.get("visited_peers"):
+            routed_by_peer_id = str(raw["visited_peers"][-1])
 
         return QueryContext(
             origin_peer_id=raw.get("origin_peer_id", "unknown"),
-            visited_peers=list(raw.get("visited_peers", [])),
+            excluded_peer_ids=list(excluded_peer_ids),
             required_capabilities=raw.get("required_capabilities"),
+            routed_by_peer_id=routed_by_peer_id,
         )
 
     def _node_summary(self) -> dict:
@@ -103,38 +108,81 @@ class QueryService:
         if context is None:
             context = QueryContext(
                 origin_peer_id="external-client",
-                visited_peers=[],
             )
 
-        # Detect direct loops.
-        if self.host.get_id().to_string() in context.visited_peers:
+        # A forwarded query is an execution request for this selected node.
+        if context.routed_by_peer_id is not None:
+            if context.routed_by_peer_id == self.host.get_id().to_string():
+                return {
+                    "type": "response",
+                    "query_id": query_id,
+                    "status": "routing_error",
+                    "answer": "[ROUTING ERROR] Node received a query routed by itself.",
+                    "routing_trace": {
+                        "query_id": query_id,
+                        "answered_by": None,
+                        "hops": [
+                            {
+                                "node": self._node_summary(),
+                                "action": "loop_detected",
+                                "routed_by_peer_id": context.routed_by_peer_id,
+                            }
+                        ],
+                    },
+                }
+
+            try:
+                answer = await self.local_agent.generate(prompt)
+            except Exception as exc:
+                log("SERVER", f"Forwarded local generation failed: {exc}")
+                return {
+                    "type": "response",
+                    "query_id": query_id,
+                    "status": "generation_error",
+                    "answer": f"[GENERATION ERROR] {exc}",
+                    "routing_trace": {
+                        "query_id": query_id,
+                        "answered_by": None,
+                        "hops": [
+                            {
+                                "node": self._node_summary(),
+                                "action": "forwarded_generation_error",
+                                "required_capabilities": context.required_capabilities,
+                                "routed_by_peer_id": context.routed_by_peer_id,
+                                "error": str(exc),
+                            }
+                        ],
+                    },
+                }
+
             return {
                 "type": "response",
                 "query_id": query_id,
-                "status": "routing_error",
-                "answer": "[ROUTING ERROR] Loop detected: local peer already visited.",
+                "status": "ok",
+                "answer": answer,
                 "routing_trace": {
                     "query_id": query_id,
-                    "answered_by": None,
+                    "answered_by": self._node_summary(),
                     "hops": [
                         {
                             "node": self._node_summary(),
-                            "action": "loop_detected",
-                            "visited_peers": context.visited_peers,
+                            "action": "execute_forwarded_request",
+                            "required_capabilities": context.required_capabilities,
+                            "routed_by_peer_id": context.routed_by_peer_id,
                         }
                     ],
                 },
             }
 
-        # Build the context that this node will use / propagate further.
-        next_context = QueryContext(
+        # Build the routing context used only by the entry/rerouting node.
+        routing_context = QueryContext(
             origin_peer_id=context.origin_peer_id,
-            visited_peers=context.visited_peers + [self.host.get_id().to_string()],
+            excluded_peer_ids=context.excluded_peer_ids,
             required_capabilities=context.required_capabilities,
         )
 
         try:
-            decision = await self.routing_service.route_query(prompt, next_context)
+            decision = await self.routing_service.route_query(prompt, routing_context)
         except Exception as exc:
             log("SERVER", f"Routing failed: {exc}")
             return {
@@ -197,7 +245,7 @@ class QueryService:
         else:
             answer = None
             routing_trace = None
-            attempt_context = next_context
+            excluded_peer_ids = list(routing_context.excluded_peer_ids)
 
             for attempt in range(3):
                 log(
@@ -211,7 +259,11 @@ class QueryService:
                     prompt=prompt,
                     timeout_s=self.query_timeout_s,
                     query_id=query_id,
-                    query_context=attempt_context,
+                    query_context=QueryContext(
+                        origin_peer_id=routing_context.origin_peer_id,
+                        required_capabilities=routing_context.required_capabilities,
+                        routed_by_peer_id=self.host.get_id().to_string(),
+                    ),
                 )
 
                 if forwarded.ok:
@@ -265,16 +317,16 @@ class QueryService:
                     f"Forwarding failed to peer={decision.target_peer_id}: {forwarded.error}",
                 )
 
-                attempt_context = QueryContext(
-                    origin_peer_id=attempt_context.origin_peer_id,
-                    visited_peers=attempt_context.visited_peers
-                    + [decision.target_peer_id],
-                    required_capabilities=attempt_context.required_capabilities,
-                )
+                excluded_peer_ids.append(decision.target_peer_id)
 
                 # Ask the existing router again after excluding the failed peer.
                 decision = await self.routing_service.route_query(
-                    prompt, attempt_context
+                    prompt,
+                    QueryContext(
+                        origin_peer_id=routing_context.origin_peer_id,
+                        excluded_peer_ids=excluded_peer_ids,
+                        required_capabilities=routing_context.required_capabilities,
+                    ),
                 )
 
                 if decision.no_suitable_node:
@@ -349,7 +401,8 @@ class QueryService:
                 "SERVER",
                 f"Received query query_id={query_id} "
                 f"required_capabilities={context.required_capabilities} "
-                f"visited={len(context.visited_peers)} prompt={prompt!r}",
+                f"routed_by={context.routed_by_peer_id} "
+                f"excluded={len(context.excluded_peer_ids)} prompt={prompt!r}",
             )
 
             reply = await self.answer_query(
@@ -388,7 +441,6 @@ class QueryService:
         if query_context is None:
             query_context = QueryContext(
                 origin_peer_id=self.host.get_id().to_string(),
-                visited_peers=[],
             )
 
         stream = None
@@ -416,7 +468,8 @@ class QueryService:
                     "prompt": prompt,
                     "query_context": {
                         "origin_peer_id": query_context.origin_peer_id,
-                        "visited_peers": query_context.visited_peers,
+                        "routed_by_peer_id": query_context.routed_by_peer_id,
+                        "excluded_peer_ids": query_context.excluded_peer_ids,
                         "required_capabilities": query_context.required_capabilities,
                     },
                 }

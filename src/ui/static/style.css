@@ -283,32 +283,85 @@ select {
 .routing-trace {
   color: #4b5563;
   font-size: 12px;
-  margin-top: 6px;
+  margin-top: 8px;
   max-width: min(760px, 78%);
 }
 
 .routing-trace summary {
+  align-items: center;
+  background: #ffffff;
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
   cursor: pointer;
-  display: inline-block;
-  padding: 2px 0;
+  display: inline-flex;
+  gap: 8px;
+  list-style: none;
+  padding: 5px 10px;
+}
+
+.routing-trace summary::-webkit-details-marker {
+  display: none;
+}
+
+.routing-summary-label {
+  color: #1d4ed8;
+  font-weight: 700;
+}
+
+.routing-summary-meta {
+  color: #6b7280;
+}
+
+.routing-trace[open] summary {
+  border-color: #93c5fd;
 }
 
 .trace-hop {
-  border-left: 2px solid #d1d5db;
-  margin-top: 8px;
-  padding-left: 10px;
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin-top: 10px;
+  padding: 10px;
 }
 
 .trace-hop h3 {
   color: #111827;
-  font-size: 13px;
-  margin: 8px 0 4px;
+  font-size: 14px;
+  margin: 0 0 8px;
 }
 
-.trace-meta,
+.trace-hop-intro {
+  color: #374151;
+  margin: 0 0 10px;
+}
+
+.trace-fields {
+  display: grid;
+  gap: 4px;
+}
+
+.trace-field {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 132px minmax(0, 1fr);
+  line-height: 1.45;
+}
+
+.trace-field-label {
+  color: #6b7280;
+  font-weight: 700;
+}
+
+.trace-field-value {
+  color: #111827;
+  overflow-wrap: anywhere;
+}
+
+.trace-note,
 .trace-reason {
   line-height: 1.45;
-  margin: 3px 0;
+  margin: 6px 0;
+  overflow-wrap: anywhere;
 }
 
 .trace-reason {
@@ -321,12 +374,57 @@ select {
   margin: 8px 0 4px;
 }
 
+.trace-step-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+  margin: 12px 0 6px;
+}
+
+.trace-step-badge {
+  align-items: center;
+  background: #dbeafe;
+  border-radius: 999px;
+  color: #1d4ed8;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 800;
+  height: 22px;
+  justify-content: center;
+  width: 22px;
+}
+
+.trace-step-title {
+  color: #111827;
+  font-weight: 800;
+}
+
+.trace-step-description {
+  color: #6b7280;
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+.trace-request-list {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0;
+}
+
+.trace-request {
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 6px;
+  padding: 8px;
+}
+
 .trace-candidate {
   background: #f9fafb;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
-  margin: 4px 0;
-  padding: 6px 8px;
+  margin: 6px 0;
+  padding: 8px;
 }
 
 .trace-candidate.selected {

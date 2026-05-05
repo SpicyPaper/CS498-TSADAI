@@ -400,7 +400,6 @@ class Node:
 
         context = QueryContext(
             origin_peer_id="http-api",
-            visited_peers=[],
             required_capabilities=required_capabilities,
         )
 

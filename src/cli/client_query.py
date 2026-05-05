@@ -74,7 +74,6 @@ async def async_main(args):
                         # Do not expose the real temporary client peer id
                         # as a routable network participant.
                         "origin_peer_id": "external-client",
-                        "visited_peers": [],
                     },
                 }
 

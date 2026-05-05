@@ -120,7 +120,7 @@ class RoutingService:
             )
             context.required_capabilities = required_capabilities
 
-        excluded = set(context.visited_peers)
+        excluded = set(context.excluded_peer_ids)
         excluded.add(self.local_profile.peer_id)
 
         candidate, trace = await self._search_scored_capabilities(

@@ -153,13 +153,6 @@ function markdownToHtml(markdown) {
   return blocks.join("");
 }
 
-function shortPeer(peerId) {
-  if (!peerId) {
-    return "unknown";
-  }
-  return peerId.length > 14 ? `${peerId.slice(0, 8)}...${peerId.slice(-6)}` : peerId;
-}
-
 function formatScore(value) {
   if (typeof value !== "number") {
     return "n/a";
@@ -175,6 +168,80 @@ function formatCapabilities(scores = {}) {
   return entries.map(([capability, score]) => `${capability} ${formatScore(score)}`).join(", ");
 }
 
+function addField(parent, label, value) {
+  const row = document.createElement("div");
+  row.className = "trace-field";
+
+  const name = document.createElement("span");
+  name.className = "trace-field-label";
+  name.textContent = label;
+
+  const text = document.createElement("span");
+  text.className = "trace-field-value";
+  text.textContent = value || "n/a";
+
+  row.append(name, text);
+  parent.appendChild(row);
+}
+
+function nodeDisplayName(peer = {}) {
+  return peer.model_name || peer.peer_id || "unknown node";
+}
+
+function describeAction(action) {
+  const descriptions = {
+    forward: "Routed this query to the selected peer.",
+    execute_local: "Answered locally on this node.",
+    execute_forwarded_request: "Executed the query because a previous hop selected this node.",
+    no_suitable_node: "Could not find a suitable node.",
+    forward_error: "The selected peer returned an error.",
+    forwarded_generation_error: "The selected peer failed while generating an answer.",
+    generation_error: "This node failed while generating an answer.",
+  };
+  return descriptions[action] || "Processed this query step.";
+}
+
+function stageLabel(name) {
+  if (name === "direct") {
+    return "Direct candidates";
+  }
+  if (name === "recommended") {
+    return "Recommended candidates";
+  }
+  return `${name || "unknown"} candidates`;
+}
+
+function stageDescription(name) {
+  if (name === "direct") {
+    return "Local node plus peers discovered through the DHT/registry are scored first.";
+  }
+  if (name === "recommended") {
+    return "If no direct candidate passes the threshold, peers are asked to suggest nodes. Suggested nodes are then scored here.";
+  }
+  return "Candidates scored during this stage.";
+}
+
+function makeStepHeader(number, title, description) {
+  const header = document.createElement("div");
+  header.className = "trace-step-header";
+
+  const badge = document.createElement("span");
+  badge.className = "trace-step-badge";
+  badge.textContent = String(number);
+
+  const text = document.createElement("div");
+  const label = document.createElement("div");
+  label.className = "trace-step-title";
+  label.textContent = title;
+  const detail = document.createElement("div");
+  detail.className = "trace-step-description";
+  detail.textContent = description;
+
+  text.append(label, detail);
+  header.append(badge, text);
+  return header;
+}
+
 function makeTraceCandidate(candidate) {
   const row = document.createElement("div");
   row.className = `trace-candidate${candidate.selected ? " selected" : ""}`;
@@ -182,82 +249,123 @@ function makeTraceCandidate(candidate) {
   const peer = candidate.peer || {};
   const title = document.createElement("div");
   title.className = "trace-candidate-title";
-  title.textContent = `${candidate.selected ? "Selected - " : ""}${peer.model_name || candidate.kind || "node"} - ${shortPeer(peer.peer_id)}`;
+  title.textContent = candidate.selected
+    ? `Selected node: ${nodeDisplayName(peer)}`
+    : nodeDisplayName(peer);
 
-  const meta = document.createElement("div");
-  meta.className = "trace-meta";
-  meta.textContent = [
-    `source=${candidate.source || "unknown"}`,
-    `utility=${formatScore(candidate.utility)}`,
-    `weighted=${formatScore(candidate.weighted_quality)}`,
-    `scores=${formatCapabilities(candidate.node_scores || {})}`,
-  ].join(" - ");
+  const fields = document.createElement("div");
+  fields.className = "trace-fields";
+  addField(fields, "Peer ID", peer.peer_id || "unknown");
+  addField(fields, "Source", candidate.source || "unknown");
+  addField(fields, "Utility", formatScore(candidate.utility));
+  addField(fields, "Weighted quality", formatScore(candidate.weighted_quality));
+  addField(fields, "Scores", formatCapabilities(candidate.node_scores || {}));
+  addField(fields, "Capabilities", (peer.capabilities || []).join(", ") || "none");
 
-  row.append(title, meta);
+  row.append(title, fields);
   return row;
+}
+
+function makeTraceSummary(answeredBy, hopCount) {
+  const summary = document.createElement("summary");
+  summary.className = "routing-summary";
+
+  const label = document.createElement("span");
+  label.className = "routing-summary-label";
+  label.textContent = "Show routing details";
+
+  const meta = document.createElement("span");
+  meta.className = "routing-summary-meta";
+  meta.textContent = answeredBy
+    ? `Answered by ${nodeDisplayName(answeredBy)} - ${hopCount} hop${hopCount === 1 ? "" : "s"}`
+    : `${hopCount} hop${hopCount === 1 ? "" : "s"}`;
+
+  summary.append(label, meta);
+  return summary;
 }
 
 function makeRoutingTrace(trace) {
   const details = document.createElement("details");
   details.className = "routing-trace";
 
-  const summary = document.createElement("summary");
   const answeredBy = trace?.answered_by;
   const hopCount = Array.isArray(trace?.hops) ? trace.hops.length : 0;
-  summary.textContent = answeredBy
-    ? `Answered by ${answeredBy.model_name || "node"} - ${shortPeer(answeredBy.peer_id)} - ${hopCount} hop${hopCount === 1 ? "" : "s"}`
-    : `Routing details - ${hopCount} hop${hopCount === 1 ? "" : "s"}`;
-  details.appendChild(summary);
+  details.appendChild(makeTraceSummary(answeredBy, hopCount));
 
   for (const [index, hop] of (trace?.hops || []).entries()) {
     const section = document.createElement("section");
     section.className = "trace-hop";
 
     const title = document.createElement("h3");
-    title.textContent = `Hop ${index + 1}: ${hop.node?.model_name || "node"} - ${shortPeer(hop.node?.peer_id)}`;
+    title.textContent = `Hop ${index + 1}: ${nodeDisplayName(hop.node)}`;
     section.appendChild(title);
 
+    const intro = document.createElement("p");
+    intro.className = "trace-hop-intro";
+    intro.textContent = describeAction(hop.action);
+    section.appendChild(intro);
+
     const overview = document.createElement("div");
-    overview.className = "trace-meta";
-    overview.textContent = [
-      `action=${hop.action || "route"}`,
-      `needs=${formatCapabilities(hop.required_capabilities || {})}`,
-      `DHT=${(hop.discovery_capabilities || []).join(", ") || "none"}`,
-    ].join(" - ");
+    overview.className = "trace-fields";
+    addField(overview, "Peer ID", hop.node?.peer_id || "unknown");
+    addField(overview, "Action", hop.action || "route");
+    if (hop.routed_by_peer_id) {
+      addField(overview, "Routed by", hop.routed_by_peer_id);
+    }
+    addField(overview, "Required capabilities", formatCapabilities(hop.required_capabilities || {}));
+    addField(overview, "DHT lookups", (hop.discovery_capabilities || []).join(", ") || "none");
+    addField(overview, "Utility threshold", formatScore(hop.utility_threshold));
     section.appendChild(overview);
-
-    if (hop.decision_reason) {
-      const reason = document.createElement("div");
-      reason.className = "trace-reason";
-      reason.textContent = hop.decision_reason;
-      section.appendChild(reason);
-    }
-
-    if (hop.selected) {
-      const selectedTitle = document.createElement("div");
-      selectedTitle.className = "trace-stage-title";
-      selectedTitle.textContent = "Selected node";
-      section.appendChild(selectedTitle);
-      section.appendChild(makeTraceCandidate(hop.selected));
-    }
 
     if (hop.previous_attempt) {
       const previous = document.createElement("div");
-      previous.className = "trace-meta";
-      previous.textContent = `Previous attempt found no candidate for ${formatCapabilities(hop.previous_attempt.required_capabilities || {})}.`;
+      previous.className = "trace-note";
+      previous.textContent = `This hop is a fallback. The previous attempt found no candidate for ${formatCapabilities(hop.previous_attempt.required_capabilities || {})}.`;
       section.appendChild(previous);
     }
 
+    let stepNumber = 1;
+
     for (const stage of hop.stages || []) {
-      const stageTitle = document.createElement("div");
-      stageTitle.className = "trace-stage-title";
-      stageTitle.textContent = `${stage.name} candidates (${stage.candidate_count || 0})`;
-      section.appendChild(stageTitle);
+      section.appendChild(
+        makeStepHeader(
+          stepNumber,
+          `${stageLabel(stage.name)} (${stage.candidate_count || 0})`,
+          stageDescription(stage.name)
+        )
+      );
+      stepNumber += 1;
+
+      if (stage.name === "recommended" && (hop.recommendation_requests || []).length) {
+        const requestNote = document.createElement("div");
+        requestNote.className = "trace-note trace-request-note";
+        requestNote.textContent =
+          "Recommendation requests are discovery only: the asked peer returns candidate peer IDs, but does not answer the user query.";
+        section.appendChild(requestNote);
+
+        const requestList = document.createElement("div");
+        requestList.className = "trace-request-list";
+
+        for (const request of hop.recommendation_requests) {
+          const requestRow = document.createElement("div");
+          requestRow.className = "trace-request";
+          addField(requestRow, "Capability", request.capability);
+          addField(requestRow, "Asked peer", request.source_peer_id);
+          addField(
+            requestRow,
+            "Returned peers",
+            (request.returned_peer_ids || []).join(", ") || "none"
+          );
+          requestList.appendChild(requestRow);
+        }
+
+        section.appendChild(requestList);
+      }
 
       const candidates = stage.candidates || [];
       if (!candidates.length) {
         const empty = document.createElement("div");
-        empty.className = "trace-meta";
+        empty.className = "trace-note";
         empty.textContent = "No reachable candidates in this stage.";
         section.appendChild(empty);
       }
@@ -265,6 +373,24 @@ function makeRoutingTrace(trace) {
       for (const candidate of candidates) {
         section.appendChild(makeTraceCandidate(candidate));
       }
+    }
+
+    if (hop.selected) {
+      section.appendChild(
+        makeStepHeader(
+          stepNumber,
+          "Final decision",
+          "The node with the best acceptable utility is selected for this hop."
+        )
+      );
+      section.appendChild(makeTraceCandidate(hop.selected));
+    }
+
+    if (hop.decision_reason) {
+      const reason = document.createElement("div");
+      reason.className = "trace-reason";
+      reason.textContent = `Reason: ${hop.decision_reason}`;
+      section.appendChild(reason);
     }
 
     details.appendChild(section);

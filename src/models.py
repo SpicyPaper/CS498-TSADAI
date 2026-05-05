@@ -60,5 +60,6 @@ class PeerStatus:
 @dataclass
 class QueryContext:
     origin_peer_id: str
-    visited_peers: list[str]
+    excluded_peer_ids: list[str] = field(default_factory=list)
     required_capabilities: dict[str, float] | None = None
+    routed_by_peer_id: str | None = None
