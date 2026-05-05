@@ -149,9 +149,9 @@ def query_node_api(
     node_api_url: str,
     prompt: str,
     timeout_s: float = 360.0,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, dict | None]:
     if not node_api_url:
-        return False, "Selected node does not expose an HTTP API."
+        return False, "Selected node does not expose an HTTP API.", None
 
     url = node_api_url.rstrip("/") + "/api/query"
     body = json.dumps({"prompt": prompt}).encode("utf-8")
@@ -170,17 +170,20 @@ def query_node_api(
         try:
             payload = json.loads(raw)
         except json.JSONDecodeError:
-            return False, raw or str(exc)
+            return False, raw or str(exc), None
     except URLError as exc:
-        return False, str(exc.reason)
+        return False, str(exc.reason), None
 
     if not isinstance(payload, dict):
-        return False, "Node API returned an invalid response."
+        return False, "Node API returned an invalid response.", None
 
     status = payload.get("status", "ok")
     answer = payload.get("answer")
+    routing_trace = payload.get("routing_trace")
+    if not isinstance(routing_trace, dict):
+        routing_trace = None
 
     if status != "ok":
-        return False, str(answer or status)
+        return False, str(answer or status), routing_trace
 
-    return True, str(answer or "")
+    return True, str(answer or ""), routing_trace

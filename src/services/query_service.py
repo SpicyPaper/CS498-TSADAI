@@ -50,6 +50,40 @@ class QueryService:
             required_capabilities=raw.get("required_capabilities"),
         )
 
+    def _node_summary(self) -> dict:
+        profile = self.routing_service.local_profile
+        return {
+            "peer_id": profile.peer_id,
+            "model_name": profile.model_name,
+            "capabilities": profile.capabilities,
+            "capability_scores": profile.capability_scores,
+        }
+
+    def _response_trace(
+        self,
+        query_id: str,
+        decision_trace: dict | None,
+        action: str,
+        answered_by: dict | None = None,
+        downstream_trace: dict | None = None,
+    ) -> dict:
+        hop = dict(decision_trace or {})
+        hop["node"] = self._node_summary()
+        hop["action"] = action
+
+        if downstream_trace and isinstance(downstream_trace.get("hops"), list):
+            hops = [hop] + downstream_trace["hops"]
+            final_answered_by = downstream_trace.get("answered_by") or answered_by
+        else:
+            hops = [hop]
+            final_answered_by = answered_by
+
+        return {
+            "query_id": query_id,
+            "answered_by": final_answered_by,
+            "hops": hops,
+        }
+
     async def answer_query(
         self,
         prompt: str,
@@ -79,6 +113,17 @@ class QueryService:
                 "query_id": query_id,
                 "status": "routing_error",
                 "answer": "[ROUTING ERROR] Loop detected: local peer already visited.",
+                "routing_trace": {
+                    "query_id": query_id,
+                    "answered_by": None,
+                    "hops": [
+                        {
+                            "node": self._node_summary(),
+                            "action": "loop_detected",
+                            "visited_peers": context.visited_peers,
+                        }
+                    ],
+                },
             }
 
         # Build the context that this node will use / propagate further.
@@ -97,6 +142,17 @@ class QueryService:
                 "query_id": query_id,
                 "status": "routing_error",
                 "answer": f"[ROUTING ERROR] {exc}",
+                "routing_trace": {
+                    "query_id": query_id,
+                    "answered_by": None,
+                    "hops": [
+                        {
+                            "node": self._node_summary(),
+                            "action": "routing_error",
+                            "error": str(exc),
+                        }
+                    ],
+                },
             }
         log("SERVER", f"Routing decision: {decision.reason}")
 
@@ -107,6 +163,11 @@ class QueryService:
                 "query_id": query_id,
                 "status": "no_suitable_node",
                 "answer": None,
+                "routing_trace": self._response_trace(
+                    query_id,
+                    decision.routing_trace,
+                    "no_suitable_node",
+                ),
             }
 
         # Execute locally.
@@ -120,10 +181,22 @@ class QueryService:
                     "query_id": query_id,
                     "status": "generation_error",
                     "answer": f"[GENERATION ERROR] {exc}",
+                    "routing_trace": self._response_trace(
+                        query_id,
+                        decision.routing_trace,
+                        "generation_error",
+                    ),
                 }
+            routing_trace = self._response_trace(
+                query_id,
+                decision.routing_trace,
+                "execute_local",
+                answered_by=self._node_summary(),
+            )
         # Forward to another peer.
         else:
             answer = None
+            routing_trace = None
             attempt_context = next_context
 
             for attempt in range(3):
@@ -153,9 +226,35 @@ class QueryService:
                             "query_id": query_id,
                             "status": "no_suitable_node",
                             "answer": None,
+                            "routing_trace": self._response_trace(
+                                query_id,
+                                decision.routing_trace,
+                                "forward_no_suitable_node",
+                                downstream_trace=forwarded.routing_trace,
+                            ),
+                        }
+
+                    if forwarded.status != "ok":
+                        return {
+                            "type": "response",
+                            "query_id": query_id,
+                            "status": forwarded.status,
+                            "answer": forwarded.answer,
+                            "routing_trace": self._response_trace(
+                                query_id,
+                                decision.routing_trace,
+                                "forward_error",
+                                downstream_trace=forwarded.routing_trace,
+                            ),
                         }
 
                     answer = forwarded.answer
+                    routing_trace = self._response_trace(
+                        query_id,
+                        decision.routing_trace,
+                        "forward",
+                        downstream_trace=forwarded.routing_trace,
+                    )
                     break
 
                 self.routing_service.peer_registry.mark_peer_unreachable(
@@ -184,11 +283,22 @@ class QueryService:
                         "query_id": query_id,
                         "status": "no_suitable_node",
                         "answer": None,
+                        "routing_trace": self._response_trace(
+                            query_id,
+                            decision.routing_trace,
+                            "no_suitable_node_after_forward_failure",
+                        ),
                     }
 
                 if decision.execute_locally:
                     log("SERVER", "Re-routing decision after failure: execute locally")
                     answer = await self.local_agent.generate(prompt)
+                    routing_trace = self._response_trace(
+                        query_id,
+                        decision.routing_trace,
+                        "execute_local_after_forward_failure",
+                        answered_by=self._node_summary(),
+                    )
                     break
 
             if answer is None:
@@ -197,6 +307,11 @@ class QueryService:
                     "query_id": query_id,
                     "status": "no_suitable_node",
                     "answer": None,
+                    "routing_trace": self._response_trace(
+                        query_id,
+                        decision.routing_trace,
+                        "forwarding_exhausted",
+                    ),
                 }
 
         return {
@@ -204,6 +319,7 @@ class QueryService:
             "query_id": query_id,
             "status": "ok",
             "answer": answer,
+            "routing_trace": routing_trace,
         }
 
     async def handle_stream(self, stream: INetStream) -> None:
@@ -341,6 +457,7 @@ class QueryService:
                 answer=reply.get("answer"),
                 error=None,
                 status=reply.get("status", "ok"),
+                routing_trace=reply.get("routing_trace"),
             )
 
         except trio.TooSlowError:

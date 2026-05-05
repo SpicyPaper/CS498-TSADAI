@@ -99,13 +99,13 @@ async def delete_conversation(conversation_id: str) -> dict:
 
 @app.post("/api/query")
 async def query(request: QueryRequest) -> dict:
-    ok, answer = await run_in_threadpool(
+    ok, answer, routing_trace = await run_in_threadpool(
         query_node_api,
         request.entry_node.strip(),
         request.prompt.strip(),
         QUERY_TIMEOUT_S,
     )
-    return {"ok": ok, "answer": answer}
+    return {"ok": ok, "answer": answer, "routing_trace": routing_trace}
 
 
 @app.post("/api/chat", response_model=None)
@@ -136,16 +136,20 @@ async def chat(request: ChatRequest):
         conversation_id = str(conversation["id"])
 
     try:
-        ok, answer = await run_in_threadpool(
+        ok, answer, routing_trace = await run_in_threadpool(
             query_node_api,
             entry_node,
             network_prompt,
             QUERY_TIMEOUT_S,
         )
     except TimeoutError:
-        ok, answer = False, f"The query timed out after {QUERY_TIMEOUT_S:.0f} seconds."
+        ok, answer, routing_trace = (
+            False,
+            f"The query timed out after {QUERY_TIMEOUT_S:.0f} seconds.",
+            None,
+        )
     except Exception as exc:
-        ok, answer = False, str(exc)
+        ok, answer, routing_trace = False, str(exc), None
 
     with lock:
         conversations = load_conversations()
@@ -156,6 +160,7 @@ async def chat(request: ChatRequest):
                 {
                     "role": "Assistant",
                     "content": answer,
+                    "routing_trace": routing_trace,
                     "created_at": time.time(),
                 }
             )
@@ -169,6 +174,7 @@ async def chat(request: ChatRequest):
         response = {
             "ok": ok,
             "answer": answer,
+            "routing_trace": routing_trace,
             "error": None if ok else answer,
             "conversation_id": conversation_id,
             "conversation": conversation,

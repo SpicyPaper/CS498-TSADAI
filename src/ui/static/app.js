@@ -153,6 +153,126 @@ function markdownToHtml(markdown) {
   return blocks.join("");
 }
 
+function shortPeer(peerId) {
+  if (!peerId) {
+    return "unknown";
+  }
+  return peerId.length > 14 ? `${peerId.slice(0, 8)}...${peerId.slice(-6)}` : peerId;
+}
+
+function formatScore(value) {
+  if (typeof value !== "number") {
+    return "n/a";
+  }
+  return value.toFixed(2);
+}
+
+function formatCapabilities(scores = {}) {
+  const entries = Object.entries(scores);
+  if (!entries.length) {
+    return "none";
+  }
+  return entries.map(([capability, score]) => `${capability} ${formatScore(score)}`).join(", ");
+}
+
+function makeTraceCandidate(candidate) {
+  const row = document.createElement("div");
+  row.className = `trace-candidate${candidate.selected ? " selected" : ""}`;
+
+  const peer = candidate.peer || {};
+  const title = document.createElement("div");
+  title.className = "trace-candidate-title";
+  title.textContent = `${candidate.selected ? "Selected - " : ""}${peer.model_name || candidate.kind || "node"} - ${shortPeer(peer.peer_id)}`;
+
+  const meta = document.createElement("div");
+  meta.className = "trace-meta";
+  meta.textContent = [
+    `source=${candidate.source || "unknown"}`,
+    `utility=${formatScore(candidate.utility)}`,
+    `weighted=${formatScore(candidate.weighted_quality)}`,
+    `scores=${formatCapabilities(candidate.node_scores || {})}`,
+  ].join(" - ");
+
+  row.append(title, meta);
+  return row;
+}
+
+function makeRoutingTrace(trace) {
+  const details = document.createElement("details");
+  details.className = "routing-trace";
+
+  const summary = document.createElement("summary");
+  const answeredBy = trace?.answered_by;
+  const hopCount = Array.isArray(trace?.hops) ? trace.hops.length : 0;
+  summary.textContent = answeredBy
+    ? `Answered by ${answeredBy.model_name || "node"} - ${shortPeer(answeredBy.peer_id)} - ${hopCount} hop${hopCount === 1 ? "" : "s"}`
+    : `Routing details - ${hopCount} hop${hopCount === 1 ? "" : "s"}`;
+  details.appendChild(summary);
+
+  for (const [index, hop] of (trace?.hops || []).entries()) {
+    const section = document.createElement("section");
+    section.className = "trace-hop";
+
+    const title = document.createElement("h3");
+    title.textContent = `Hop ${index + 1}: ${hop.node?.model_name || "node"} - ${shortPeer(hop.node?.peer_id)}`;
+    section.appendChild(title);
+
+    const overview = document.createElement("div");
+    overview.className = "trace-meta";
+    overview.textContent = [
+      `action=${hop.action || "route"}`,
+      `needs=${formatCapabilities(hop.required_capabilities || {})}`,
+      `DHT=${(hop.discovery_capabilities || []).join(", ") || "none"}`,
+    ].join(" - ");
+    section.appendChild(overview);
+
+    if (hop.decision_reason) {
+      const reason = document.createElement("div");
+      reason.className = "trace-reason";
+      reason.textContent = hop.decision_reason;
+      section.appendChild(reason);
+    }
+
+    if (hop.selected) {
+      const selectedTitle = document.createElement("div");
+      selectedTitle.className = "trace-stage-title";
+      selectedTitle.textContent = "Selected node";
+      section.appendChild(selectedTitle);
+      section.appendChild(makeTraceCandidate(hop.selected));
+    }
+
+    if (hop.previous_attempt) {
+      const previous = document.createElement("div");
+      previous.className = "trace-meta";
+      previous.textContent = `Previous attempt found no candidate for ${formatCapabilities(hop.previous_attempt.required_capabilities || {})}.`;
+      section.appendChild(previous);
+    }
+
+    for (const stage of hop.stages || []) {
+      const stageTitle = document.createElement("div");
+      stageTitle.className = "trace-stage-title";
+      stageTitle.textContent = `${stage.name} candidates (${stage.candidate_count || 0})`;
+      section.appendChild(stageTitle);
+
+      const candidates = stage.candidates || [];
+      if (!candidates.length) {
+        const empty = document.createElement("div");
+        empty.className = "trace-meta";
+        empty.textContent = "No reachable candidates in this stage.";
+        section.appendChild(empty);
+      }
+
+      for (const candidate of candidates) {
+        section.appendChild(makeTraceCandidate(candidate));
+      }
+    }
+
+    details.appendChild(section);
+  }
+
+  return details;
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { "Content-Type": "application/json" },
@@ -218,6 +338,9 @@ function renderMessages() {
         <div class="message-role">${role === "user" ? "You" : "TSADAI"}</div>
         <div class="message-content">${markdownToHtml(message.content)}</div>
       `;
+      if (role === "assistant" && message.routing_trace) {
+        wrapper.appendChild(makeRoutingTrace(message.routing_trace));
+      }
     }
     els.messages.appendChild(wrapper);
   }

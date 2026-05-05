@@ -26,6 +26,7 @@ class QueryResult:
     answer: Optional[str]
     error: Optional[str]
     status: str = "ok"
+    routing_trace: Optional[dict] = None
 
 
 @dataclass
