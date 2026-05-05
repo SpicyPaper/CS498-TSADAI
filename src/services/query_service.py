@@ -47,7 +47,7 @@ class QueryService:
         return QueryContext(
             origin_peer_id=raw.get("origin_peer_id", "unknown"),
             visited_peers=list(raw.get("visited_peers", [])),
-            required_capability=raw.get("required_capability"),
+            required_capabilities=raw.get("required_capabilities"),
         )
 
     async def answer_query(
@@ -85,7 +85,7 @@ class QueryService:
         next_context = QueryContext(
             origin_peer_id=context.origin_peer_id,
             visited_peers=context.visited_peers + [self.host.get_id().to_string()],
-            required_capability=context.required_capability,
+            required_capabilities=context.required_capabilities,
         )
 
         try:
@@ -170,7 +170,7 @@ class QueryService:
                     origin_peer_id=attempt_context.origin_peer_id,
                     visited_peers=attempt_context.visited_peers
                     + [decision.target_peer_id],
-                    required_capability=attempt_context.required_capability,
+                    required_capabilities=attempt_context.required_capabilities,
                 )
 
                 # Ask the existing router again after excluding the failed peer.
@@ -232,7 +232,7 @@ class QueryService:
             log(
                 "SERVER",
                 f"Received query query_id={query_id} "
-                f"required_capability={context.required_capability} "
+                f"required_capabilities={context.required_capabilities} "
                 f"visited={len(context.visited_peers)} prompt={prompt!r}",
             )
 
@@ -301,7 +301,7 @@ class QueryService:
                     "query_context": {
                         "origin_peer_id": query_context.origin_peer_id,
                         "visited_peers": query_context.visited_peers,
-                        "required_capability": query_context.required_capability,
+                        "required_capabilities": query_context.required_capabilities,
                     },
                 }
 

@@ -60,4 +60,4 @@ class PeerStatus:
 class QueryContext:
     origin_peer_id: str
     visited_peers: list[str]
-    required_capability: str | None = None
+    required_capabilities: dict[str, float] | None = None

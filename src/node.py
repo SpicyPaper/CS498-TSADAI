@@ -393,7 +393,7 @@ class Node:
         self,
         prompt: str,
         query_id: str | None = None,
-        required_capability: str | None = None,
+        required_capabilities: dict[str, float] | None = None,
     ) -> dict:
         if self._trio_token is None:
             raise RuntimeError("Node is not running yet")
@@ -401,7 +401,7 @@ class Node:
         context = QueryContext(
             origin_peer_id="http-api",
             visited_peers=[],
-            required_capability=required_capability,
+            required_capabilities=required_capabilities,
         )
 
         return trio.from_thread.run(

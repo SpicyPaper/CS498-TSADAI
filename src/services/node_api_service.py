@@ -14,7 +14,7 @@ from src.node import Node
 class NodeQueryRequest(BaseModel):
     prompt: str
     query_id: str | None = None
-    required_capability: str | None = None
+    required_capabilities: dict[str, float] | None = None
 
 
 class NodeAPIService:
@@ -58,7 +58,7 @@ class NodeAPIService:
                 self.node.answer_query_from_api,
                 request.prompt,
                 request.query_id,
-                request.required_capability,
+                request.required_capabilities,
             )
         except Exception as exc:
             log("HTTP", f"Query failed: {exc}")
