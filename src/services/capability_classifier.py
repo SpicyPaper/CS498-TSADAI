@@ -32,17 +32,18 @@ class CapabilityClassifier:
                 "Choose 1 to 3 capabilities. Use fewer when the request is simple. "
                 "The main capability should usually be between 0.7 and 1.0. Secondary capabilities should usually be between 0.2 and 0.6. "
                 "Allowed capabilities: "
-                "general for casual chat, simple facts, broad explanations, ambiguous requests; "
+                "general for casual chat, simple common-knowledge facts, broad explanations, definitions, simple Q&A, ambiguous requests; "
                 "math for calculations, equations, formulas, proofs, probability, statistics; "
                 "programming for writing, modifying, explaining, or debugging code; Python functions; APIs; scripts; algorithms; software implementation; "
                 "writing for producing or improving non-code prose text: drafting, rewriting, grammar, translation, emails, essays, reports, documentation wording, style, tone; "
                 "summarization for summaries, shortening, extracting key points, condensing text; "
-                "research for comparing, investigating, background information, sources, citations, current facts; "
+                "research for requests that need investigation, source checking, citations, current information, specific external facts, evidence, or comparisons. "
                 "planning for plans, schedules, roadmaps, strategies, checklists, steps; "
                 "creative for inventing or generating imaginative content: stories, poems, jokes, brainstorming, names, slogans, characters, dialogue, concepts, ideas. "
                 "Resolve overlaps by the requested output: code output is programming; prose output is writing; imaginative output is creative; condensed output is summarization; numeric/formal reasoning is math. "
                 "If the request includes conversation history, classify mainly the latest user message. "
-                "Use general only for broad, casual, or ambiguous requests where no specialized capability clearly fits. "
+                "Use general alone for simple common-knowledge facts, basic definitions, simple Q&A, and simple explanations when no specialized work is needed. "
+                "Do not include general as a secondary capability just because the user used natural language. "
                 "Output JSON only."
             ),
             num_predict=96,
@@ -89,14 +90,6 @@ class CapabilityClassifier:
             except (TypeError, ValueError):
                 continue
             scores[capability] = max(0.0, min(1.0, value))
-
-        specialized_scores = {
-            capability: score
-            for capability, score in scores.items()
-            if capability != "general"
-        }
-        if specialized_scores and max(specialized_scores.values()) >= 0.5:
-            scores.pop("general", None)
 
         return dict(
             sorted(
