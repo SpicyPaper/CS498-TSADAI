@@ -17,7 +17,6 @@ const els = {
   messages: document.querySelector("#messages"),
   prompt: document.querySelector("#prompt"),
   form: document.querySelector("#chat-form"),
-  status: document.querySelector("#status"),
   send: document.querySelector("#send"),
   refresh: document.querySelector("#refresh"),
   newChat: document.querySelector("#new-chat"),
@@ -871,10 +870,12 @@ function renderMessages() {
     }
     if (message.pending) {
       wrapper.classList.add("pending");
+      const pendingText = message.status || "Preparing request...";
       wrapper.innerHTML = `
         <div class="message-role">TSADAI</div>
-        <div class="message-content pending-content" aria-label="Waiting for network response">
-          <span></span><span></span><span></span>
+        <div class="message-content pending-content" aria-label="Request in progress">
+          <span class="pending-text">${escapeHtml(pendingText)}</span>
+          <span class="pending-dot"></span><span class="pending-dot"></span><span class="pending-dot"></span>
         </div>
       `;
     } else {
@@ -970,7 +971,6 @@ function newChat() {
 
 async function deleteChat() {
   if (!state.currentConversationId) {
-    setStatus("Select a conversation to delete.");
     return;
   }
   const data = await api(`/api/conversations/${encodeURIComponent(state.currentConversationId)}`, {
@@ -982,11 +982,6 @@ async function deleteChat() {
   resetTraceSelection();
   renderConversations();
   renderMessages();
-  setStatus("Conversation deleted.");
-}
-
-function setStatus(value) {
-  els.status.textContent = value;
 }
 
 async function sendMessage(event) {
@@ -1015,7 +1010,6 @@ async function sendMessage(event) {
 
   els.prompt.value = "";
   els.send.disabled = true;
-  setStatus("Preparing request...");
 
   try {
     const start = await api("/api/chat/start", {
@@ -1036,7 +1030,11 @@ async function sendMessage(event) {
     while (true) {
       await sleep(1000);
       const status = await api(`/api/chat/status/${encodeURIComponent(start.query_id)}`);
-      setStatus(status.message || "Waiting for network response...");
+      const pending = conversation.messages.find((message) => message.pending);
+      if (pending && status.message) {
+        pending.status = status.message;
+        renderMessages();
+      }
 
       if (!status.done) {
         continue;
@@ -1052,7 +1050,6 @@ async function sendMessage(event) {
       state.conversations = data.conversations;
       renderConversations();
       renderMessages();
-      setStatus("Ready");
       break;
     }
   } catch (error) {
@@ -1062,7 +1059,6 @@ async function sendMessage(event) {
       pending.content = error.message;
     }
     renderMessages();
-    setStatus(error.message);
   } finally {
     els.send.disabled = false;
     els.prompt.focus();
@@ -1088,4 +1084,4 @@ els.prompt.addEventListener("keydown", (event) => {
   }
 });
 
-refreshState().then(renderMessages).catch((error) => setStatus(error.message));
+refreshState().then(renderMessages).catch(() => {});
