@@ -42,7 +42,7 @@ async def async_main(args):
             result = await node.query_service.query_peer(
                 info.peer_id,
                 prompt=args.prompt,
-                timeout_s=args.timeout,
+                timeout_s=args.query_timeout,
             )
             if result.ok:
                 print(f"QUERY OK  peer={result.peer_id}")
@@ -66,6 +66,12 @@ def main():
         "--prompt", type=str, default="Hello node", help="Prompt for query mode"
     )
     parser.add_argument("--timeout", type=float, default=5.0, help="Request timeout")
+    parser.add_argument(
+        "--query-timeout",
+        type=float,
+        default=60.0,
+        help="Query response timeout in seconds for query mode",
+    )
     parser.add_argument(
         "-s", "--seed", type=int, default=None, help="Optional deterministic seed"
     )

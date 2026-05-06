@@ -124,7 +124,7 @@ def main():
     parser.add_argument(
         "--timeout",
         type=float,
-        default=360.0,
+        default=150.0,
         help="Query timeout in seconds",
     )
     parser.add_argument(

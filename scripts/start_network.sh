@@ -126,7 +126,8 @@ python -m src.cli.run_node \
   --ollama-num-predict "${OLLAMA_NUM_PREDICT:-512}" \
   --ollama-system-prompt "$SYSTEM_PROMPT0" \
   --classifier-timeout "${CLASSIFIER_TIMEOUT:-60}" \
-  --query-timeout "${QUERY_TIMEOUT:-330}" \
+  --query-timeout "${QUERY_TIMEOUT:-60}" \
+  --query-connect-timeout "${QUERY_CONNECT_TIMEOUT:-3}" \
   > "$LOG0" 2>&1 &
 
 PID0=$!
@@ -228,7 +229,8 @@ for ((i=1; i<NUM_NODES; i++)); do
     --ollama-num-predict "${OLLAMA_NUM_PREDICT:-512}" \
     --ollama-system-prompt "$SYSTEM_PROMPT" \
     --classifier-timeout "${CLASSIFIER_TIMEOUT:-60}" \
-    --query-timeout "${QUERY_TIMEOUT:-330}" \
+    --query-timeout "${QUERY_TIMEOUT:-60}" \
+    --query-connect-timeout "${QUERY_CONNECT_TIMEOUT:-3}" \
     > "$LOG_FILE" 2>&1 &
 
   PID=$!

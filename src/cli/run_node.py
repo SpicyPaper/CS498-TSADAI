@@ -53,6 +53,7 @@ async def async_main(args):
         ollama_system_prompt=args.ollama_system_prompt,
         classifier_timeout=args.classifier_timeout,
         query_timeout=args.query_timeout,
+        query_connect_timeout=args.query_connect_timeout,
     )
 
     await node.run_forever(
@@ -103,8 +104,14 @@ def main():
     parser.add_argument(
         "--query-timeout",
         type=float,
-        default=330.0,
-        help="Peer forwarding query timeout in seconds.",
+        default=60.0,
+        help="Peer forwarding response timeout in seconds.",
+    )
+    parser.add_argument(
+        "--query-connect-timeout",
+        type=float,
+        default=3.0,
+        help="Peer forwarding connect/open-stream timeout in seconds.",
     )
     parser.add_argument(
         "--classifier-timeout",

@@ -148,7 +148,7 @@ def summarize_conversations(conversations: list[dict]) -> list[dict]:
 def query_node_api(
     node_api_url: str,
     prompt: str,
-    timeout_s: float = 360.0,
+    timeout_s: float = 150.0,
 ) -> tuple[bool, str, dict | None]:
     if not node_api_url:
         return False, "Selected node does not expose an HTTP API.", None

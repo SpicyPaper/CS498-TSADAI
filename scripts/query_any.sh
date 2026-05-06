@@ -39,4 +39,4 @@ fi
 python -m src.cli.client_query \
   --entry-node "$ENTRY_ADDR" \
   --prompt "$PROMPT" \
-  --timeout "${CLIENT_QUERY_TIMEOUT:-360}"
+  --timeout "${CLIENT_QUERY_TIMEOUT:-150}"

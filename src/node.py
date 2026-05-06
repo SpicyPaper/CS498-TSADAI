@@ -61,7 +61,8 @@ class Node:
         ollama_num_predict: int = 512,
         ollama_system_prompt: str | None = None,
         classifier_timeout: float = 60.0,
-        query_timeout: float = 330.0,
+        query_timeout: float = 60.0,
+        query_connect_timeout: float = 3.0,
     ) -> None:
         self.port = port if port > 0 else find_free_port()
         # List of addresses from which the host will accept incoming connection
@@ -75,6 +76,7 @@ class Node:
         self.ollama_timeout = ollama_timeout
         self.classifier_timeout = classifier_timeout
         self.query_timeout = query_timeout
+        self.query_connect_timeout = query_connect_timeout
 
         # Seed is useful for tests
         if seed is not None:
@@ -166,6 +168,7 @@ class Node:
             self.local_agent,
             self.routing_service,
             query_timeout_s=query_timeout,
+            query_connect_timeout_s=query_connect_timeout,
         )
 
         self.pubsub_service = None
@@ -263,7 +266,8 @@ class Node:
             f"allowed_capabilities={CAPABILITIES}",
         )
         log("NODE", f"Advertise address mode: {self.advertise_address_mode}")
-        log("NODE", f"Peer query timeout: {self.query_timeout:.0f}s")
+        log("NODE", f"Peer query response timeout: {self.query_timeout:.0f}s")
+        log("NODE", f"Peer query connect timeout: {self.query_connect_timeout:.0f}s")
         if self.api_url is not None:
             log("NODE", f"HTTP API: {self.api_url}")
             log("NODE", f"HTTP query endpoint: POST {self.api_url}/api/query")

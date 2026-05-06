@@ -15,7 +15,9 @@ from src.services.routing_service import RoutingService
 from src.local_agent import LocalAgent
 
 
-DEFAULT_QUERY_TIMEOUT_S = 330.0
+DEFAULT_QUERY_TIMEOUT_S = 60.0
+DEFAULT_QUERY_CONNECT_TIMEOUT_S = 3.0
+MAX_FORWARD_ATTEMPTS = 2
 
 
 class QueryService:
@@ -34,12 +36,14 @@ class QueryService:
         local_agent: LocalAgent,
         routing_service: RoutingService,
         query_timeout_s: float = DEFAULT_QUERY_TIMEOUT_S,
+        query_connect_timeout_s: float = DEFAULT_QUERY_CONNECT_TIMEOUT_S,
     ) -> None:
         self.host = host
         self.transport = transport
         self.local_agent = local_agent
         self.routing_service = routing_service
         self.query_timeout_s = query_timeout_s
+        self.query_connect_timeout_s = query_connect_timeout_s
 
     def _parse_context_from_message(self, message: dict) -> QueryContext:
         raw = message.get("query_context", {})
@@ -71,6 +75,7 @@ class QueryService:
         action: str,
         answered_by: dict | None = None,
         downstream_trace: dict | None = None,
+        previous_hops: list[dict] | None = None,
     ) -> dict:
         hop = dict(decision_trace or {})
         hop["node"] = self._node_summary()
@@ -83,11 +88,29 @@ class QueryService:
             hops = [hop]
             final_answered_by = answered_by
 
+        if previous_hops:
+            hops = previous_hops + hops
+
         return {
             "query_id": query_id,
             "answered_by": final_answered_by,
             "hops": hops,
         }
+
+    def _failed_forward_hop(
+        self,
+        decision_trace: dict | None,
+        peer_id: str,
+        error: str | None,
+        attempt: int,
+    ) -> dict:
+        hop = dict(decision_trace or {})
+        hop["node"] = self._node_summary()
+        hop["action"] = "forward_failed"
+        hop["failed_peer_id"] = peer_id
+        hop["forward_error"] = error or "unknown error"
+        hop["attempt"] = attempt
+        return hop
 
     async def answer_query(
         self,
@@ -246,8 +269,9 @@ class QueryService:
             answer = None
             routing_trace = None
             excluded_peer_ids = list(routing_context.excluded_peer_ids)
+            failed_forward_hops: list[dict] = []
 
-            for attempt in range(3):
+            for attempt in range(MAX_FORWARD_ATTEMPTS):
                 log(
                     "SERVER",
                     f"Routing decision: forward to peer={decision.target_peer_id} "
@@ -283,6 +307,7 @@ class QueryService:
                                 decision.routing_trace,
                                 "forward_no_suitable_node",
                                 downstream_trace=forwarded.routing_trace,
+                                previous_hops=failed_forward_hops,
                             ),
                         }
 
@@ -297,6 +322,7 @@ class QueryService:
                                 decision.routing_trace,
                                 "forward_error",
                                 downstream_trace=forwarded.routing_trace,
+                                previous_hops=failed_forward_hops,
                             ),
                         }
 
@@ -306,6 +332,7 @@ class QueryService:
                         decision.routing_trace,
                         "forward",
                         downstream_trace=forwarded.routing_trace,
+                        previous_hops=failed_forward_hops,
                     )
                     break
 
@@ -316,8 +343,19 @@ class QueryService:
                     "SERVER",
                     f"Forwarding failed to peer={decision.target_peer_id}: {forwarded.error}",
                 )
+                failed_forward_hops.append(
+                    self._failed_forward_hop(
+                        decision.routing_trace,
+                        decision.target_peer_id,
+                        forwarded.error,
+                        attempt + 1,
+                    )
+                )
 
                 excluded_peer_ids.append(decision.target_peer_id)
+
+                if attempt == MAX_FORWARD_ATTEMPTS - 1:
+                    break
 
                 # Ask the existing router again after excluding the failed peer.
                 decision = await self.routing_service.route_query(
@@ -339,6 +377,7 @@ class QueryService:
                             query_id,
                             decision.routing_trace,
                             "no_suitable_node_after_forward_failure",
+                            previous_hops=failed_forward_hops,
                         ),
                     }
 
@@ -350,6 +389,7 @@ class QueryService:
                         decision.routing_trace,
                         "execute_local_after_forward_failure",
                         answered_by=self._node_summary(),
+                        previous_hops=failed_forward_hops,
                     )
                     break
 
@@ -361,8 +401,9 @@ class QueryService:
                     "answer": None,
                     "routing_trace": self._response_trace(
                         query_id,
-                        decision.routing_trace,
+                        None,
                         "forwarding_exhausted",
+                        previous_hops=failed_forward_hops,
                     ),
                 }
 
@@ -429,6 +470,7 @@ class QueryService:
         peer_id: ID,
         prompt: str,
         timeout_s: float = DEFAULT_QUERY_TIMEOUT_S,
+        connect_timeout_s: float | None = None,
         query_id: str | None = None,
         query_context: QueryContext | None = None,
     ) -> QueryResult:
@@ -444,36 +486,59 @@ class QueryService:
             )
 
         stream = None
+        connect_timeout_s = connect_timeout_s or self.query_connect_timeout_s
 
         try:
-            # Send query to node with peer_id
+            known_addr = self.routing_service.peer_registry.get_any_address(
+                str(peer_id)
+            )
+
+            try:
+                with trio.fail_after(connect_timeout_s):
+                    if known_addr is not None:
+                        try:
+                            await connect_to_peer(self.host, known_addr)
+                        except Exception as exc:
+                            log(
+                                "CLIENT",
+                                f"Lazy connect failed for peer={peer_id}: {exc}",
+                            )
+
+                    stream = await self.transport.open_stream(
+                        self.host, peer_id, QUERY_PROTOCOL
+                    )
+            except trio.TooSlowError:
+                log("CLIENT", f"Query connect timeout after {connect_timeout_s:.2f}s")
+                return QueryResult(
+                    ok=False,
+                    peer_id=str(peer_id),
+                    answer=None,
+                    error=f"connect timeout after {connect_timeout_s:.2f}s",
+                    status="error",
+                )
+            except Exception as exc:
+                log("CLIENT", f"Query connect failed: {exc}")
+                return QueryResult(
+                    ok=False,
+                    peer_id=str(peer_id),
+                    answer=None,
+                    error=str(exc),
+                    status="error",
+                )
+
+            payload = {
+                "type": "query",
+                "query_id": query_id,
+                "prompt": prompt,
+                "query_context": {
+                    "origin_peer_id": query_context.origin_peer_id,
+                    "routed_by_peer_id": query_context.routed_by_peer_id,
+                    "excluded_peer_ids": query_context.excluded_peer_ids,
+                    "required_capabilities": query_context.required_capabilities,
+                },
+            }
+
             with trio.fail_after(timeout_s):
-                known_addr = self.routing_service.peer_registry.get_any_address(
-                    str(peer_id)
-                )
-
-                if known_addr is not None:
-                    try:
-                        await connect_to_peer(self.host, known_addr)
-                    except Exception as exc:
-                        log("CLIENT", f"Lazy connect failed for peer={peer_id}: {exc}")
-
-                stream = await self.transport.open_stream(
-                    self.host, peer_id, QUERY_PROTOCOL
-                )
-
-                payload = {
-                    "type": "query",
-                    "query_id": query_id,
-                    "prompt": prompt,
-                    "query_context": {
-                        "origin_peer_id": query_context.origin_peer_id,
-                        "routed_by_peer_id": query_context.routed_by_peer_id,
-                        "excluded_peer_ids": query_context.excluded_peer_ids,
-                        "required_capabilities": query_context.required_capabilities,
-                    },
-                }
-
                 await self.transport.send_message(stream, payload, role="CLIENT")
                 log("CLIENT", f"Query sent to peer={peer_id} query_id={query_id} ")
 
