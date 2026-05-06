@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import time
+from threading import Lock
+
 import uvicorn
 import trio
 from fastapi import FastAPI
@@ -22,11 +25,19 @@ class NodeAPIService:
         self.node = node
         self.host = host
         self.port = port
+        self._progress_lock = Lock()
+        self._progress_by_query_id: dict[str, list[dict]] = {}
         self.app = FastAPI(title="TSADAI Node API")
         self.app.add_api_route(
             "/api/query",
             self.query,
             methods=["POST"],
+            response_model=None,
+        )
+        self.app.add_api_route(
+            "/api/query/progress/{query_id}",
+            self.query_progress,
+            methods=["GET"],
             response_model=None,
         )
 
@@ -41,10 +52,28 @@ class NodeAPIService:
 
         log("HTTP", f"Node API listening on http://{self.host}:{self.port}")
         log("HTTP", f"Query endpoint: POST http://{self.host}:{self.port}/api/query")
+        log(
+            "HTTP",
+            f"Progress endpoint: GET http://{self.host}:{self.port}/api/query/progress/<query_id>",
+        )
         try:
             await trio.to_thread.run_sync(server.run, abandon_on_cancel=True)
         finally:
             server.should_exit = True
+
+    def _append_progress_event(self, query_id: str, event: dict) -> None:
+        event = {
+            "ts": time.time(),
+            **event,
+        }
+        with self._progress_lock:
+            events = self._progress_by_query_id.setdefault(query_id, [])
+            events.append(event)
+            del events[:-50]
+
+    def _reset_progress(self, query_id: str) -> None:
+        with self._progress_lock:
+            self._progress_by_query_id[query_id] = []
 
     async def query(self, request: NodeQueryRequest):
         if not request.prompt.strip():
@@ -54,11 +83,20 @@ class NodeAPIService:
             )
 
         try:
+            progress_callback = None
+            if request.query_id:
+                self._reset_progress(request.query_id)
+                progress_callback = lambda event: self._append_progress_event(
+                    request.query_id,
+                    event,
+                )
+
             reply = await run_in_threadpool(
                 self.node.answer_query_from_api,
                 request.prompt,
                 request.query_id,
                 request.required_capabilities,
+                progress_callback,
             )
         except Exception as exc:
             log("HTTP", f"Query failed: {exc}")
@@ -68,3 +106,13 @@ class NodeAPIService:
             )
 
         return reply
+
+    async def query_progress(self, query_id: str):
+        with self._progress_lock:
+            events = list(self._progress_by_query_id.get(query_id, []))
+
+        return {
+            "query_id": query_id,
+            "events": events,
+            "latest": events[-1] if events else None,
+        }

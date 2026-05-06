@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
-import threading
 import time
 import uuid
+from threading import Lock
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import BackgroundTasks, FastAPI
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
@@ -21,6 +20,7 @@ from src.ui.web_state import (
     find_conversation,
     load_conversations,
     query_node_api,
+    query_node_progress,
     read_available_nodes,
     save_conversations,
     summarize_conversations,
@@ -30,7 +30,7 @@ from src.ui.web_state import (
 app = FastAPI(title="TSADAI Gateway")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-lock = threading.Lock()
+lock = Lock()
 QUERY_TIMEOUT_S = 150.0
 QUERY_STATUSES: dict[str, dict] = {}
 
@@ -46,18 +46,6 @@ class QueryRequest(BaseModel):
     prompt: str
 
 
-def _query_status_message(elapsed_s: float, done: bool) -> str:
-    if done:
-        return "Network response received."
-    if elapsed_s < 3:
-        return "Sending the request to the selected entry node..."
-    if elapsed_s < 10:
-        return "The entry node is routing the request through the network..."
-    if elapsed_s < 60:
-        return "Waiting for the selected node to generate an answer..."
-    return "Still waiting. If the selected node fails, the entry node can try another candidate."
-
-
 def _set_query_status(query_id: str, **updates) -> None:
     with lock:
         status = QUERY_STATUSES.setdefault(
@@ -67,7 +55,7 @@ def _set_query_status(query_id: str, **updates) -> None:
                 "started_at": time.time(),
                 "done": False,
                 "ok": None,
-                "message": "Preparing request...",
+                "message": None,
             },
         )
         status.update(updates)
@@ -82,7 +70,7 @@ def _finish_chat_query(
     _set_query_status(
         query_id,
         phase="waiting_for_network",
-        message="Waiting for the network response...",
+        message=None,
     )
 
     try:
@@ -90,6 +78,7 @@ def _finish_chat_query(
             entry_node,
             network_prompt,
             QUERY_TIMEOUT_S,
+            query_id=query_id,
         )
     except TimeoutError:
         ok, answer, routing_trace = (
@@ -141,6 +130,52 @@ def _finish_chat_query(
                 "finished_at": time.time(),
             }
         )
+
+
+def _prepare_chat_query(request: ChatRequest) -> dict | JSONResponse:
+    entry_node = request.entry_node.strip()
+    prompt = request.prompt.strip()
+
+    if not entry_node or not prompt:
+        return JSONResponse(
+            {"error": "entry_node and prompt are required"},
+            status_code=400,
+        )
+
+    with lock:
+        conversations = load_conversations()
+        conversation = ensure_conversation(
+            conversations,
+            request.conversation_id,
+            prompt,
+        )
+        messages = conversation.setdefault("messages", [])
+        network_prompt = build_network_prompt(messages, prompt)
+        messages.append(
+            {"role": "User", "content": prompt, "created_at": time.time()}
+        )
+        conversation["updated_at"] = time.time()
+        save_conversations(conversations)
+        conversation_id = str(conversation["id"])
+
+    query_id = str(uuid.uuid4())
+    _set_query_status(
+        query_id,
+        conversation_id=conversation_id,
+        entry_node=entry_node,
+        phase="queued",
+        message=None,
+    )
+
+    return {
+        "ok": True,
+        "query_id": query_id,
+        "conversation_id": conversation_id,
+        "entry_node": entry_node,
+        "network_prompt": network_prompt,
+        "conversation": conversation,
+        "conversations": summarize_conversations(load_conversations()),
+    }
 
 
 @app.get("/")
@@ -209,51 +244,25 @@ async def query(request: QueryRequest) -> dict:
 
 
 @app.post("/api/chat/start", response_model=None)
-async def start_chat(request: ChatRequest):
-    entry_node = request.entry_node.strip()
-    prompt = request.prompt.strip()
+async def start_chat(request: ChatRequest, background_tasks: BackgroundTasks):
+    prepared = _prepare_chat_query(request)
+    if isinstance(prepared, JSONResponse):
+        return prepared
 
-    if not entry_node or not prompt:
-        return JSONResponse(
-            {"error": "entry_node and prompt are required"},
-            status_code=400,
-        )
-
-    with lock:
-        conversations = load_conversations()
-        conversation = ensure_conversation(
-            conversations,
-            request.conversation_id,
-            prompt,
-        )
-        messages = conversation.setdefault("messages", [])
-        network_prompt = build_network_prompt(messages, prompt)
-        messages.append(
-            {"role": "User", "content": prompt, "created_at": time.time()}
-        )
-        conversation["updated_at"] = time.time()
-        save_conversations(conversations)
-        conversation_id = str(conversation["id"])
-
-    query_id = str(uuid.uuid4())
-    _set_query_status(
-        query_id,
-        conversation_id=conversation_id,
-        phase="queued",
-        message="Preparing request...",
+    background_tasks.add_task(
+        _finish_chat_query,
+        prepared["query_id"],
+        prepared["conversation_id"],
+        prepared["entry_node"],
+        prepared["network_prompt"],
     )
-    threading.Thread(
-        target=_finish_chat_query,
-        args=(query_id, conversation_id, entry_node, network_prompt),
-        daemon=True,
-    ).start()
 
     return {
         "ok": True,
-        "query_id": query_id,
-        "conversation_id": conversation_id,
-        "conversation": conversation,
-        "conversations": summarize_conversations(load_conversations()),
+        "query_id": prepared["query_id"],
+        "conversation_id": prepared["conversation_id"],
+        "conversation": prepared["conversation"],
+        "conversations": prepared["conversations"],
     }
 
 
@@ -268,40 +277,46 @@ async def chat_status(query_id: str):
     elapsed_s = time.time() - float(status.get("started_at", time.time()))
     done = bool(status.get("done"))
     status["elapsed_s"] = elapsed_s
-    status["message"] = status.get("message") or _query_status_message(
-        elapsed_s,
-        done,
-    )
-    if not done:
-        status["message"] = _query_status_message(elapsed_s, done)
+    if not done and status.get("entry_node"):
+        progress = await run_in_threadpool(
+            query_node_progress,
+            status["entry_node"],
+            query_id,
+        )
+        events = progress.get("events") if isinstance(progress, dict) else []
+        latest = progress.get("latest") if isinstance(progress, dict) else None
+        if events:
+            status["progress_events"] = events
+        if isinstance(latest, dict) and latest.get("message"):
+            status["message"] = latest["message"]
+            status["phase"] = latest.get("event", status.get("phase"))
+
+    if done and not status.get("message"):
+        status["message"] = "Network response received."
     return status
 
 
 @app.post("/api/chat", response_model=None)
 async def chat(request: ChatRequest):
-    start_response = await start_chat(request)
+    start_response = _prepare_chat_query(request)
+    if isinstance(start_response, JSONResponse):
+        return start_response
+
     query_id = start_response["query_id"]
-    deadline = time.time() + QUERY_TIMEOUT_S
+    await run_in_threadpool(
+        _finish_chat_query,
+        query_id,
+        start_response["conversation_id"],
+        start_response["entry_node"],
+        start_response["network_prompt"],
+    )
 
-    while time.time() < deadline:
-        with lock:
-            status = QUERY_STATUSES.get(query_id)
-            if status and status.get("done"):
-                response = status["response"]
-                if not response.get("ok"):
-                    return JSONResponse(response, status_code=400)
-                return response
-        await asyncio.sleep(0.25)
+    with lock:
+        response = QUERY_STATUSES[query_id]["response"]
 
-    response = {
-        "ok": False,
-        "answer": f"The query timed out after {QUERY_TIMEOUT_S:.0f} seconds.",
-        "error": f"The query timed out after {QUERY_TIMEOUT_S:.0f} seconds.",
-        "conversation_id": start_response["conversation_id"],
-        "conversation": start_response["conversation"],
-        "conversations": summarize_conversations(load_conversations()),
-    }
-    return JSONResponse(response, status_code=400)
+    if not response.get("ok"):
+        return JSONResponse(response, status_code=400)
+    return response
 
 
 def main() -> None:

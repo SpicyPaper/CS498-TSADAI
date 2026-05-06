@@ -149,12 +149,16 @@ def query_node_api(
     node_api_url: str,
     prompt: str,
     timeout_s: float = 150.0,
+    query_id: str | None = None,
 ) -> tuple[bool, str, dict | None]:
     if not node_api_url:
         return False, "Selected node does not expose an HTTP API.", None
 
     url = node_api_url.rstrip("/") + "/api/query"
-    body = json.dumps({"prompt": prompt}).encode("utf-8")
+    payload = {"prompt": prompt}
+    if query_id:
+        payload["query_id"] = query_id
+    body = json.dumps(payload).encode("utf-8")
     request = Request(
         url,
         data=body,
@@ -187,3 +191,22 @@ def query_node_api(
         return False, str(answer or status), routing_trace
 
     return True, str(answer or ""), routing_trace
+
+
+def query_node_progress(node_api_url: str, query_id: str, timeout_s: float = 2.0) -> dict:
+    if not node_api_url or not query_id:
+        return {"query_id": query_id, "events": [], "latest": None}
+
+    url = node_api_url.rstrip("/") + f"/api/query/progress/{query_id}"
+    request = Request(url, method="GET")
+
+    try:
+        with urlopen(request, timeout=timeout_s) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError):
+        return {"query_id": query_id, "events": [], "latest": None}
+
+    if not isinstance(payload, dict):
+        return {"query_id": query_id, "events": [], "latest": None}
+
+    return payload

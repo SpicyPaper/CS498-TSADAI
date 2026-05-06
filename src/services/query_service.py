@@ -1,4 +1,5 @@
 import uuid
+from collections.abc import Callable
 
 import trio
 
@@ -117,6 +118,7 @@ class QueryService:
         prompt: str,
         query_id: str | None = None,
         context: QueryContext | None = None,
+        progress_callback: Callable[[dict], None] | None = None,
     ) -> dict:
         """
         Answer one query using the same routing path as the libp2p query protocol.
@@ -133,9 +135,29 @@ class QueryService:
                 origin_peer_id="external-client",
             )
 
+        def emit(event: str, message: str, **data) -> None:
+            if progress_callback is None:
+                return
+            progress_callback(
+                {
+                    "event": event,
+                    "message": message,
+                    "query_id": query_id,
+                    **data,
+                }
+            )
+
+        emit(
+            "query_received",
+            "The entry node received the query.",
+            node=self._node_summary(),
+            routed_by_peer_id=context.routed_by_peer_id,
+        )
+
         # A forwarded query is an execution request for this selected node.
         if context.routed_by_peer_id is not None:
             if context.routed_by_peer_id == self.host.get_id().to_string():
+                emit("routing_error", "The node detected a routing loop.")
                 return {
                     "type": "response",
                     "query_id": query_id,
@@ -155,9 +177,19 @@ class QueryService:
                 }
 
             try:
+                emit(
+                    "generation_started",
+                    "The selected node started generating the answer.",
+                    node=self._node_summary(),
+                )
                 answer = await self.local_agent.generate(prompt)
             except Exception as exc:
                 log("SERVER", f"Forwarded local generation failed: {exc}")
+                emit(
+                    "generation_failed",
+                    "The selected node failed while generating the answer.",
+                    error=str(exc),
+                )
                 return {
                     "type": "response",
                     "query_id": query_id,
@@ -178,6 +210,11 @@ class QueryService:
                     },
                 }
 
+            emit(
+                "generation_completed",
+                "The selected node finished generating the answer.",
+                node=self._node_summary(),
+            )
             return {
                 "type": "response",
                 "query_id": query_id,
@@ -205,9 +242,11 @@ class QueryService:
         )
 
         try:
+            emit("routing_started", "The entry node is evaluating network candidates.")
             decision = await self.routing_service.route_query(prompt, routing_context)
         except Exception as exc:
             log("SERVER", f"Routing failed: {exc}")
+            emit("routing_failed", "Routing failed on the entry node.", error=str(exc))
             return {
                 "type": "response",
                 "query_id": query_id,
@@ -226,9 +265,18 @@ class QueryService:
                 },
             }
         log("SERVER", f"Routing decision: {decision.reason}")
+        emit(
+            "routing_decision",
+            "The entry node selected the next step.",
+            decision=decision.reason,
+            execute_locally=decision.execute_locally,
+            target_peer_id=decision.target_peer_id,
+            no_suitable_node=decision.no_suitable_node,
+        )
 
         # Bounded search ended, no suitable node found here.
         if decision.no_suitable_node:
+            emit("no_suitable_node", "No suitable node was found.")
             return {
                 "type": "response",
                 "query_id": query_id,
@@ -244,9 +292,19 @@ class QueryService:
         # Execute locally.
         if decision.execute_locally:
             try:
+                emit(
+                    "generation_started",
+                    "The entry node selected itself and started generating the answer.",
+                    node=self._node_summary(),
+                )
                 answer = await self.local_agent.generate(prompt)
             except Exception as exc:
                 log("SERVER", f"Local generation failed: {exc}")
+                emit(
+                    "generation_failed",
+                    "The local node failed while generating the answer.",
+                    error=str(exc),
+                )
                 return {
                     "type": "response",
                     "query_id": query_id,
@@ -264,6 +322,11 @@ class QueryService:
                 "execute_local",
                 answered_by=self._node_summary(),
             )
+            emit(
+                "generation_completed",
+                "The local node finished generating the answer.",
+                node=self._node_summary(),
+            )
         # Forward to another peer.
         else:
             answer = None
@@ -276,6 +339,12 @@ class QueryService:
                     "SERVER",
                     f"Routing decision: forward to peer={decision.target_peer_id} "
                     f"attempt={attempt + 1}",
+                )
+                emit(
+                    "forward_started",
+                    "The entry node is forwarding the query to the selected peer.",
+                    target_peer_id=decision.target_peer_id,
+                    attempt=attempt + 1,
                 )
 
                 forwarded = await self.query_peer(
@@ -291,6 +360,13 @@ class QueryService:
                 )
 
                 if forwarded.ok:
+                    emit(
+                        "forward_response_received",
+                        "The selected peer answered the forwarded query.",
+                        target_peer_id=decision.target_peer_id,
+                        status=forwarded.status,
+                        attempt=attempt + 1,
+                    )
                     self.routing_service.peer_registry.mark_peer_alive(
                         decision.target_peer_id,
                         rtt_ms=None,
@@ -343,6 +419,13 @@ class QueryService:
                     "SERVER",
                     f"Forwarding failed to peer={decision.target_peer_id}: {forwarded.error}",
                 )
+                emit(
+                    "forward_failed",
+                    "The selected peer did not answer, so the entry node will try another candidate if possible.",
+                    target_peer_id=decision.target_peer_id,
+                    error=forwarded.error,
+                    attempt=attempt + 1,
+                )
                 failed_forward_hops.append(
                     self._failed_forward_hop(
                         decision.routing_trace,
@@ -358,6 +441,11 @@ class QueryService:
                     break
 
                 # Ask the existing router again after excluding the failed peer.
+                emit(
+                    "rerouting_started",
+                    "The failed peer is excluded and candidates are evaluated again.",
+                    excluded_peer_ids=excluded_peer_ids,
+                )
                 decision = await self.routing_service.route_query(
                     prompt,
                     QueryContext(
@@ -368,6 +456,10 @@ class QueryService:
                 )
 
                 if decision.no_suitable_node:
+                    emit(
+                        "no_suitable_node",
+                        "No suitable node was found after excluding the failed peer.",
+                    )
                     return {
                         "type": "response",
                         "query_id": query_id,
@@ -383,6 +475,11 @@ class QueryService:
 
                 if decision.execute_locally:
                     log("SERVER", "Re-routing decision after failure: execute locally")
+                    emit(
+                        "generation_started",
+                        "After retrying routing, the entry node selected itself and started generating the answer.",
+                        node=self._node_summary(),
+                    )
                     answer = await self.local_agent.generate(prompt)
                     routing_trace = self._response_trace(
                         query_id,
@@ -391,9 +488,18 @@ class QueryService:
                         answered_by=self._node_summary(),
                         previous_hops=failed_forward_hops,
                     )
+                    emit(
+                        "generation_completed",
+                        "The local node finished generating the answer.",
+                        node=self._node_summary(),
+                    )
                     break
 
             if answer is None:
+                emit(
+                    "forwarding_exhausted",
+                    "All forward attempts failed, so routing stops.",
+                )
                 return {
                     "type": "response",
                     "query_id": query_id,
@@ -407,6 +513,7 @@ class QueryService:
                     ),
                 }
 
+        emit("query_completed", "The network response is ready.")
         return {
             "type": "response",
             "query_id": query_id,

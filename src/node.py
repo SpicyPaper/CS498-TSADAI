@@ -398,6 +398,7 @@ class Node:
         prompt: str,
         query_id: str | None = None,
         required_capabilities: dict[str, float] | None = None,
+        progress_callback=None,
     ) -> dict:
         if self._trio_token is None:
             raise RuntimeError("Node is not running yet")
@@ -412,5 +413,6 @@ class Node:
             prompt,
             query_id,
             context,
+            progress_callback,
             trio_token=self._trio_token,
         )
