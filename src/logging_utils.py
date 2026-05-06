@@ -8,6 +8,7 @@ This provides:
 """
 
 from datetime import datetime
+import sys
 
 
 def log(role: str, message: str) -> None:
@@ -20,4 +21,7 @@ def log(role: str, message: str) -> None:
     - QUERY
     """
     ts = datetime.now().strftime("%H:%M:%S")
-    print(f"[{ts}] [{role}] {message}", flush=True)
+    line = f"[{ts}] [{role}] {message}"
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    safe_line = line.encode(encoding, errors="backslashreplace").decode(encoding)
+    print(safe_line, flush=True)
