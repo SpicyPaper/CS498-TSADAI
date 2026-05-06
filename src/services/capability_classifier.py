@@ -52,9 +52,7 @@ class CapabilityClassifier:
 
     async def classify_scores(self, prompt: str) -> dict[str, float]:
         raw = await self.agent.generate(
-            "Latest user request:\n"
-            f"{prompt}\n\n"
-            "Capability score JSON:"
+            f"Latest user request:\n{prompt}\n\nCapability score JSON:"
         )
 
         scores = self._parse_scores(raw)
