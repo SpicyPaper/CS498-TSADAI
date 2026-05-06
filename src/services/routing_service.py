@@ -9,7 +9,7 @@ from src.services.health_service import HealthService
 from src.services.capability_classifier import CAPABILITIES, CapabilityClassifier
 from src.services.recommendation_service import RecommendationService
 
-MIN_UTILITY_THRESHOLD = 0.65
+MIN_ROUTING_SCORE_THRESHOLD = 0.65
 DHT_DISCOVERY_MIN_DEMAND = 0.3
 MAX_RECOMMENDATIONS_PER_PEER = 3
 
@@ -163,23 +163,15 @@ class RoutingService:
                 routing_trace=trace,
             )
 
-        kind, profile, route_utility, weighted_quality, source = candidate
-        trace["selected"] = self._candidate_trace(
-            kind,
-            profile,
-            route_utility,
-            weighted_quality,
-            source,
-            selected_capabilities,
-            selected=True,
-        )
+        kind, profile, routing_score, weighted_quality, source, selected_trace = candidate
+        trace["selected"] = {**selected_trace, "selected": True}
         trace["decision_reason"] = ""
 
         if kind == "local":
             reason = (
                 f"local chosen for capability_scores={selected_capabilities} "
                 f"weighted_quality={weighted_quality:.2f} "
-                f"utility={route_utility:.2f}"
+                f"routing_score={routing_score:.2f}"
             )
             trace["decision_reason"] = reason
             return RoutingDecision(
@@ -193,7 +185,7 @@ class RoutingService:
             f"capability_scores={selected_capabilities} "
             f"node_scores={self._profile_scores_for(profile, selected_capabilities)} "
             f"weighted_quality={weighted_quality:.2f} "
-            f"utility={route_utility:.2f}"
+            f"routing_score={routing_score:.2f}"
         )
         trace["decision_reason"] = reason
         return RoutingDecision(
@@ -253,10 +245,10 @@ class RoutingService:
         self,
         capability_scores: dict[str, float],
         excluded_peer_ids: set[str],
-    ) -> tuple[tuple[str, NodeProfile | None, float, float, str] | None, dict]:
+    ) -> tuple[tuple[str, NodeProfile | None, float, float, str, dict] | None, dict]:
         """
         Refresh DHT candidates for important requested capabilities, then choose
-        the node with the best cumulative utility.
+        the node with the best routing score.
 
         The routing keeps the original two-stage behavior: first try local and
         direct DHT candidates, then ask recommendations only if no direct
@@ -269,8 +261,11 @@ class RoutingService:
             "required_capabilities": capability_scores,
             "discovery_capabilities": discovery_capabilities,
             "dht_discovery_min_demand": DHT_DISCOVERY_MIN_DEMAND,
-            "utility_threshold": MIN_UTILITY_THRESHOLD,
+            "routing_score_threshold": MIN_ROUTING_SCORE_THRESHOLD,
             "excluded_peer_ids": sorted(excluded_peer_ids),
+            "recommendation_status": "",
+            "recommendation_reason": "",
+            "selection_reason": "",
             "stages": [],
         }
 
@@ -285,11 +280,16 @@ class RoutingService:
             and self._has_any_requested_capability(profile, capability_scores)
         ]
 
+        local_available = self._has_any_requested_capability(
+            self.local_profile,
+            capability_scores,
+        )
+
         log(
             "ROUTING",
             f"Scoring cumulative candidates capability_scores={capability_scores} "
             f"discovery_capabilities={discovery_capabilities} "
-            f"local_available={self._has_any_requested_capability(self.local_profile, capability_scores)} "
+            f"local_available={local_available} "
             f"direct_count={len(direct_remote_candidates)}",
         )
 
@@ -304,15 +304,34 @@ class RoutingService:
                 "name": "direct",
                 "candidate_count": len(direct_candidates),
                 "candidates": [candidate[-1] for candidate in direct_candidates],
+                "skipped_candidates": []
+                if local_available
+                else [
+                    {
+                        "kind": "local",
+                        "peer": self._profile_summary(None),
+                        "reason": (
+                            "The local node was not evaluated because none of "
+                            "its capability scores matched the requested "
+                            "capabilities."
+                        ),
+                    }
+                ],
             }
         )
         best_direct = self._best_candidate(direct_candidates)
 
-        if best_direct is not None and best_direct[2] >= MIN_UTILITY_THRESHOLD:
+        if best_direct is not None and best_direct[2] >= MIN_ROUTING_SCORE_THRESHOLD:
+            trace["recommendation_status"] = "skipped"
+            trace["recommendation_reason"] = (
+                "A direct candidate met the minimum routing score, so no "
+                "recommendation requests were needed."
+            )
+            trace["selection_reason"] = "direct_candidate_above_threshold"
             log(
                 "ROUTING",
-                f"Selected direct candidate utility={best_direct[2]:.2f} "
-                f"threshold={MIN_UTILITY_THRESHOLD:.2f}",
+                f"Selected direct candidate routing_score={best_direct[2]:.2f} "
+                f"threshold={MIN_ROUTING_SCORE_THRESHOLD:.2f}",
             )
             return self._candidate_from_evaluation(best_direct), trace
 
@@ -322,8 +341,8 @@ class RoutingService:
             log(
                 "ROUTING",
                 f"No direct candidate above threshold "
-                f"best_utility={best_direct[2]:.2f} "
-                f"threshold={MIN_UTILITY_THRESHOLD:.2f}",
+                f"best_routing_score={best_direct[2]:.2f} "
+                f"threshold={MIN_ROUTING_SCORE_THRESHOLD:.2f}",
             )
 
         recommended_remote_candidates = await self._get_recommended_candidates(
@@ -332,6 +351,23 @@ class RoutingService:
             excluded_peer_ids,
             trace,
         )
+        trace["recommendation_status"] = "used"
+        if recommended_remote_candidates:
+            trace["recommendation_reason"] = (
+                "No direct candidate reached the minimum routing score, so "
+                "direct peers were asked for recommendations."
+            )
+        elif self.recommendation_service is None:
+            trace["recommendation_reason"] = (
+                "No direct candidate reached the minimum routing score, but "
+                "the recommendation service is not enabled on this node."
+            )
+        else:
+            trace["recommendation_reason"] = (
+                "No direct candidate reached the minimum routing score. "
+                "Recommendation requests were tried, but did not return any "
+                "additional reachable candidate."
+            )
         log(
             "ROUTING",
             f"Recommendation candidate count={len(recommended_remote_candidates)}",
@@ -342,6 +378,7 @@ class RoutingService:
             capability_scores,
             include_local=False,
             source="recommended",
+            recommended_sources=trace.get("recommended_sources", {}),
         )
         trace["stages"].append(
             {
@@ -354,21 +391,24 @@ class RoutingService:
 
         if (
             best_recommended is not None
-            and best_recommended[2] >= MIN_UTILITY_THRESHOLD
+            and best_recommended[2] >= MIN_ROUTING_SCORE_THRESHOLD
         ):
+            trace["selection_reason"] = "recommended_candidate_above_threshold"
             log(
                 "ROUTING",
-                f"Selected recommended candidate utility={best_recommended[2]:.2f} "
-                f"threshold={MIN_UTILITY_THRESHOLD:.2f}",
+                f"Selected recommended candidate routing_score={best_recommended[2]:.2f} "
+                f"threshold={MIN_ROUTING_SCORE_THRESHOLD:.2f}",
             )
             return self._candidate_from_evaluation(best_recommended), trace
 
         best_seen = self._best_candidate(direct_candidates + recommended_candidates)
         if best_seen is not None:
+            trace["selection_reason"] = "best_seen_below_threshold"
             log(
                 "ROUTING",
                 f"No candidate above threshold, using best seen "
-                f"utility={best_seen[2]:.2f} threshold={MIN_UTILITY_THRESHOLD:.2f}",
+                f"routing_score={best_seen[2]:.2f} "
+                f"threshold={MIN_ROUTING_SCORE_THRESHOLD:.2f}",
             )
 
         return (
@@ -381,30 +421,37 @@ class RoutingService:
         capability_scores: dict[str, float],
         include_local: bool,
         source: str,
+        recommended_sources: dict[str, list[dict]] | None = None,
     ) -> list[tuple[str, NodeProfile | None, float, float, str, dict]]:
         evaluated: list[tuple[str, NodeProfile | None, float, float, str, dict]] = []
+        recommended_sources = recommended_sources or {}
 
         if include_local and self._has_any_requested_capability(
             self.local_profile,
             capability_scores,
         ):
-            local_utility, local_weighted_quality = self._scored_candidate_utility(
+            (
+                local_routing_score,
+                local_weighted_quality,
+                local_score_breakdown,
+            ) = self._scored_candidate_routing_score(
                 self.local_profile,
                 capability_scores,
             )
             local_trace = self._candidate_trace(
                 "local",
                 None,
-                local_utility,
+                local_routing_score,
                 local_weighted_quality,
                 "local",
                 capability_scores,
+                local_score_breakdown,
             )
             evaluated.append(
                 (
                     "local",
                     None,
-                    local_utility,
+                    local_routing_score,
                     local_weighted_quality,
                     "local",
                     local_trace,
@@ -416,6 +463,7 @@ class RoutingService:
                 profile,
                 capability_scores,
                 source,
+                recommended_by=recommended_sources.get(profile.peer_id, []),
             )
             if candidate is not None:
                 evaluated.append(candidate)
@@ -434,9 +482,8 @@ class RoutingService:
     def _candidate_from_evaluation(
         self,
         candidate: tuple[str, NodeProfile | None, float, float, str, dict],
-    ) -> tuple[str, NodeProfile | None, float, float, str]:
-        kind, profile, utility, weighted_quality, source, _ = candidate
-        return kind, profile, utility, weighted_quality, source
+    ) -> tuple[str, NodeProfile | None, float, float, str, dict]:
+        return candidate
 
     async def _get_recommended_candidates(
         self,
@@ -450,6 +497,7 @@ class RoutingService:
             return []
 
         recommended_by_id: dict[str, NodeProfile] = {}
+        recommended_sources: dict[str, list[dict]] = {}
         recommendation_requests: list[dict] = []
         recommendation_excluded_peer_ids = set(excluded_peer_ids)
         recommendation_excluded_peer_ids.update(profile.peer_id for profile in sources)
@@ -478,6 +526,7 @@ class RoutingService:
                 recommendation_requests.append(
                     {
                         "source_peer_id": source.peer_id,
+                        "source_peer": self._profile_summary(source),
                         "capability": capability,
                         "returned_peer_ids": recommended_peer_ids,
                     }
@@ -502,9 +551,17 @@ class RoutingService:
                         )
                     ):
                         recommended_by_id[profile.peer_id] = profile
+                        recommended_sources.setdefault(profile.peer_id, []).append(
+                            {
+                                "source_peer_id": source.peer_id,
+                                "source_peer": self._profile_summary(source),
+                                "capability": capability,
+                            }
+                        )
                         recommendation_excluded_peer_ids.add(profile.peer_id)
 
         trace["recommendation_requests"] = recommendation_requests
+        trace["recommended_sources"] = recommended_sources
         return list(recommended_by_id.values())
 
     def _has_any_requested_capability(
@@ -543,11 +600,13 @@ class RoutingService:
         self,
         kind: str,
         profile: NodeProfile | None,
-        utility: float,
+        routing_score: float,
         weighted_quality: float,
         source: str,
         capability_scores: dict[str, float],
+        score_breakdown: dict,
         selected: bool = False,
+        recommended_by: list[dict] | None = None,
     ) -> dict:
         profile_for_scores = self.local_profile if profile is None else profile
         return {
@@ -560,7 +619,9 @@ class RoutingService:
                 capability_scores,
             ),
             "weighted_quality": round(weighted_quality, 4),
-            "utility": round(utility, 4),
+            "routing_score": round(routing_score, 4),
+            "score_breakdown": score_breakdown,
+            "recommended_by": recommended_by or [],
         }
 
     def _weighted_capability_quality(
@@ -572,7 +633,7 @@ class RoutingService:
         Weighted average of node quality for the requested capabilities.
 
         Missing node scores count as 0, and the final quality is clamped to
-        [0, 1] so it stays comparable with the rest of the utility formula.
+        [0, 1] so it stays comparable with the rest of the routing score formula.
         """
         total_demand = sum(capability_scores.values())
         if total_demand <= 0.0:
@@ -585,11 +646,11 @@ class RoutingService:
 
         return max(0.0, min(1.0, weighted_quality))
 
-    def _scored_candidate_utility(
+    def _scored_candidate_routing_score(
         self,
         profile: NodeProfile,
         capability_scores: dict[str, float],
-    ) -> tuple[float, float]:
+    ) -> tuple[float, float, dict]:
         """
         Combine static multi-capability quality with local health observations.
         """
@@ -612,32 +673,55 @@ class RoutingService:
             if status.last_rtt_ms is not None:
                 latency_score = min(status.last_rtt_ms / 1000.0, 1.0)
 
-        utility = (
+        routing_score = (
             0.75 * weighted_quality
             + 0.15 * freshness_score
             - 0.07 * failure_score
             - 0.08 * latency_score
         )
-        utility = max(0.0, min(1.0, utility))
+        routing_score = max(0.0, min(1.0, routing_score))
+        score_breakdown = {
+            "capability_match": {
+                "value": round(weighted_quality, 4),
+                "weight": 0.75,
+                "contribution": round(0.75 * weighted_quality, 4),
+            },
+            "fresh_profile": {
+                "value": round(freshness_score, 4),
+                "weight": 0.15,
+                "contribution": round(0.15 * freshness_score, 4),
+            },
+            "recent_failures": {
+                "value": round(failure_score, 4),
+                "weight": -0.07,
+                "contribution": round(-0.07 * failure_score, 4),
+            },
+            "latency": {
+                "value": round(latency_score, 4),
+                "weight": -0.08,
+                "contribution": round(-0.08 * latency_score, 4),
+            },
+        }
 
         log(
             "ROUTING",
-            f"Utility breakdown peer_id={profile.peer_id} "
+            f"Routing score breakdown peer_id={profile.peer_id} "
             f"capability_scores={capability_scores} "
             f"node_scores={self._profile_scores_for(profile, capability_scores)} "
             f"weighted_quality={weighted_quality:.2f} "
             f"freshness={freshness_score:.2f} "
             f"failure={failure_score:.2f} latency={latency_score:.2f} "
-            f"utility={utility:.2f}",
+            f"routing_score={routing_score:.2f}",
         )
 
-        return utility, weighted_quality
+        return routing_score, weighted_quality, score_breakdown
 
     async def _evaluate_scored_candidate(
         self,
         profile: NodeProfile,
         capability_scores: dict[str, float],
         source: str,
+        recommended_by: list[dict] | None = None,
         timeout_s: float = 2.0,
     ) -> tuple[str, NodeProfile, float, float, str, dict] | None:
         if self.health_service is not None:
@@ -650,7 +734,7 @@ class RoutingService:
             if not result.ok:
                 return None
 
-        utility, weighted_quality = self._scored_candidate_utility(
+        routing_score, weighted_quality, score_breakdown = self._scored_candidate_routing_score(
             profile,
             capability_scores,
         )
@@ -658,10 +742,12 @@ class RoutingService:
         trace = self._candidate_trace(
             "remote",
             profile,
-            utility,
+            routing_score,
             weighted_quality,
             source,
             capability_scores,
+            score_breakdown,
+            recommended_by=recommended_by,
         )
 
-        return "remote", profile, utility, weighted_quality, source, trace
+        return "remote", profile, routing_score, weighted_quality, source, trace
