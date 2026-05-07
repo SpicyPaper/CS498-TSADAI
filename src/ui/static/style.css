@@ -403,6 +403,26 @@ select {
   padding: 0 14px 18px;
 }
 
+.trace-timing-card {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin: 0 14px 10px;
+  padding: 10px;
+}
+
+.trace-timing-title {
+  color: #111827;
+  font-weight: 800;
+  margin-bottom: 7px;
+}
+
+.trace-timing-note {
+  color: #6b7280;
+  line-height: 1.4;
+  margin-top: 7px;
+}
+
 .trace-fields {
   display: grid;
   gap: 6px;
@@ -423,6 +443,20 @@ select {
 .trace-field-value {
   color: #111827;
   overflow-wrap: anywhere;
+}
+
+.trace-details {
+  margin-top: 8px;
+}
+
+.trace-details summary {
+  color: #2563eb;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.trace-details[open] summary {
+  margin-bottom: 8px;
 }
 
 .trace-note,
@@ -473,6 +507,13 @@ select {
   color: #6b7280;
   line-height: 1.4;
   margin-top: 2px;
+}
+
+.trace-step-time {
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: 4px;
 }
 
 .trace-request-list {
@@ -556,9 +597,28 @@ select {
   font-weight: 800;
 }
 
+.trace-score-help {
+  color: #6b7280;
+  line-height: 1.4;
+}
+
 .trace-score-row {
   color: #4b5563;
   line-height: 1.4;
+}
+
+.trace-timing-list {
+  display: grid;
+  gap: 6px;
+}
+
+.trace-timing-row {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  color: #374151;
+  line-height: 1.4;
+  padding: 7px 8px;
 }
 
 .composer {

@@ -167,12 +167,130 @@ function formatScore(value) {
   return value.toFixed(2);
 }
 
+function formatDuration(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
+    return "n/a";
+  }
+  if (ms < 1000) {
+    return `${Math.round(ms)} ms`;
+  }
+  if (ms < 10000) {
+    return `${(ms / 1000).toFixed(1)} s`;
+  }
+  return `${Math.round(ms / 1000)} s`;
+}
+
+function stepDurationText(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
+    return null;
+  }
+  return `Took ${formatDuration(ms)}`;
+}
+
+function recommendationTimingText(hop) {
+  if (typeof hop.recommendation_duration_ms === "number") {
+    return stepDurationText(hop.recommendation_duration_ms);
+  }
+  if (hop.recommendation_status === "disabled") {
+    return "Not enabled";
+  }
+  if (hop.recommendation_status === "skipped") {
+    return "Skipped";
+  }
+  if (hop.recommendation_status === "no_requests") {
+    return "No request sent";
+  }
+  return null;
+}
+
+function traceProgressEvents(trace = {}) {
+  return Array.isArray(trace.progress_events) ? trace.progress_events : [];
+}
+
+function traceTotalDurationMs(trace = {}) {
+  const events = traceProgressEvents(trace).filter((event) => typeof event.ts === "number");
+  if (events.length < 2) {
+    return null;
+  }
+  return (events[events.length - 1].ts - events[0].ts) * 1000;
+}
+
+function traceTimingSummary(trace = {}) {
+  const events = traceProgressEvents(trace).filter((event) => typeof event.ts === "number");
+  if (!events.length) {
+    return null;
+  }
+
+  return {
+    totalMs: events.length > 1 ? (events[events.length - 1].ts - events[0].ts) * 1000 : 0,
+    rows: events.map((event, index) => ({
+      message: event.message || event.event || "Network step",
+      elapsedMs: (event.ts - events[0].ts) * 1000,
+      durationMs: index === 0 ? 0 : (event.ts - events[index - 1].ts) * 1000,
+    })),
+  };
+}
+
+function makeTimingLookup(trace = {}) {
+  const events = traceProgressEvents(trace).filter((event) => typeof event.ts === "number");
+  const byEvent = new Map();
+
+  for (const event of events) {
+    if (!byEvent.has(event.event)) {
+      byEvent.set(event.event, event);
+    }
+  }
+
+  function phase(startName, endNames) {
+    const start = byEvent.get(startName);
+    const end = endNames.map((name) => byEvent.get(name)).find(Boolean);
+    if (!start || !end || end.ts < start.ts) {
+      return null;
+    }
+    return stepDurationText((end.ts - start.ts) * 1000);
+  }
+
+  return {
+    phase,
+    routing: phase("routing_started", [
+      "routing_decision",
+      "routing_failed",
+      "no_suitable_node",
+    ]),
+    request: phase("query_received", ["routing_started", "generation_started"]),
+    decision: phase("routing_decision", [
+      "forward_started",
+      "generation_started",
+      "no_suitable_node",
+    ]),
+    forward: phase("forward_started", [
+      "forward_response_received",
+      "forward_failed",
+      "forwarding_exhausted",
+    ]),
+    generation: phase("generation_started", [
+      "generation_completed",
+      "generation_failed",
+      "query_completed",
+    ]),
+    complete: phase("query_completed", []),
+  };
+}
+
 function formatCapabilities(scores = {}) {
   const entries = Object.entries(scores);
   if (!entries.length) {
     return "none";
   }
   return entries.map(([capability, score]) => `${capability} ${formatScore(score)}`).join(", ");
+}
+
+function capabilityList(peer = {}) {
+  const names = peer.advertised_capabilities || [];
+  if (!names.length) {
+    return "none";
+  }
+  return names.join(", ");
 }
 
 function contributionLabel(value) {
@@ -197,6 +315,16 @@ function addField(parent, label, value) {
 
   row.append(name, text);
   parent.appendChild(row);
+}
+
+function makeDetails(title) {
+  const details = document.createElement("details");
+  details.className = "trace-details";
+
+  const summary = document.createElement("summary");
+  summary.textContent = title;
+  details.appendChild(summary);
+  return details;
 }
 
 function nodeDisplayName(peer = {}) {
@@ -231,7 +359,7 @@ function selectionReasonText(hop) {
     return "No direct candidate reached the minimum routing score, then a recommended candidate did, so it was selected.";
   }
   if (hop.selection_reason === "best_seen_below_threshold") {
-    return "No candidate reached the minimum routing score, so the best evaluated candidate was used as a fallback.";
+    return "No candidate reached the minimum routing score, so the best evaluated candidate was selected.";
   }
   return "The selected node is the best candidate found for this routing step.";
 }
@@ -256,7 +384,7 @@ function stageDescription(name) {
   return "Candidates scored during this stage.";
 }
 
-function makeStepHeader(number, title, description) {
+function makeStepHeader(number, title, description, timingText = null) {
   const header = document.createElement("div");
   header.className = "trace-step-header";
 
@@ -273,14 +401,18 @@ function makeStepHeader(number, title, description) {
   detail.textContent = description;
 
   text.append(label, detail);
+  const timing = document.createElement("div");
+  timing.className = "trace-step-time";
+  timing.textContent = timingText || stepDurationText(0);
+  text.appendChild(timing);
   header.append(badge, text);
   return header;
 }
 
-function makeTimelineStep(number, title, description) {
+function makeTimelineStep(number, title, description, timingText = null) {
   const section = document.createElement("section");
   section.className = "trace-step";
-  section.appendChild(makeStepHeader(number, title, description));
+  section.appendChild(makeStepHeader(number, title, description, timingText));
   return section;
 }
 
@@ -342,6 +474,12 @@ function makeScoreBreakdown(breakdown) {
   title.textContent = "Routing score components";
   box.appendChild(title);
 
+  const help = document.createElement("div");
+  help.className = "trace-score-help";
+  help.textContent =
+    "The final routing score starts from the requested-capability match, then adjusts for freshness, failures, and latency.";
+  box.appendChild(help);
+
   for (const key of ["capability_match", "fresh_profile", "recent_failures", "latency"]) {
     const item = breakdown[key];
     if (!item) {
@@ -377,13 +515,10 @@ function makeTraceCandidate(candidate) {
 
   const fields = document.createElement("div");
   fields.className = "trace-fields";
-  addField(fields, "Peer ID", peer.peer_id || "unknown");
   addField(fields, "Candidate type", candidate.kind === "local" ? "local node" : "remote peer");
-  addField(fields, "Source", candidate.source || "unknown");
   addField(fields, "Routing score", formatScore(candidate.routing_score));
-  addField(fields, "Weighted quality", formatScore(candidate.weighted_quality));
-  addField(fields, "Scores", formatCapabilities(candidate.node_scores || {}));
-  addField(fields, "Capabilities", (peer.capabilities || []).join(", ") || "none");
+  addField(fields, "Requested-capability match", formatScore(candidate.weighted_quality));
+  addField(fields, "Scores used for this request", formatCapabilities(candidate.node_scores || {}));
   if ((candidate.recommended_by || []).length) {
     addField(
       fields,
@@ -395,9 +530,21 @@ function makeTraceCandidate(candidate) {
   }
 
   row.append(title, fields);
+  const details = makeDetails("More candidate details");
+  const detailFields = document.createElement("div");
+  detailFields.className = "trace-fields";
+  addField(detailFields, "Peer ID", peer.peer_id || "unknown");
+  addField(detailFields, "Source", candidate.source || "unknown");
+  addField(detailFields, "Full node scores", formatCapabilities(peer.capability_scores || {}));
+  addField(detailFields, "Advertised capabilities", capabilityList(peer));
+  details.appendChild(detailFields);
+
   const breakdown = makeScoreBreakdown(candidate.score_breakdown);
   if (breakdown) {
-    row.appendChild(breakdown);
+    details.appendChild(breakdown);
+  }
+  if (details.children.length > 1) {
+    row.appendChild(details);
   }
   return row;
 }
@@ -457,21 +604,30 @@ function makeDecisionReason(hop) {
 
   addField(fields, "Required scores", formatCapabilities(hop.required_capabilities || {}));
   addField(fields, "Why", selectionReasonText(hop));
-  addField(fields, "Minimum routing score", formatScore(hop.routing_score_threshold));
   if (selected.node_scores) {
-    addField(fields, "Node scores", formatCapabilities(selected.node_scores));
-  }
-  if (typeof selected.weighted_quality === "number") {
-    addField(fields, "Weighted quality", formatScore(selected.weighted_quality));
+    addField(fields, "Scores used for this request", formatCapabilities(selected.node_scores));
   }
   if (typeof selected.routing_score === "number") {
     addField(fields, "Routing score", formatScore(selected.routing_score));
   }
-  if (!selected.peer && hop.decision_reason) {
-    addField(fields, "Raw reason", hop.decision_reason);
-  }
 
   reason.appendChild(fields);
+
+  const details = makeDetails("More decision details");
+  const detailFields = document.createElement("div");
+  detailFields.className = "trace-fields";
+  addField(detailFields, "Minimum routing score", formatScore(hop.routing_score_threshold));
+  if (selected.peer?.capability_scores) {
+    addField(detailFields, "Full node scores", formatCapabilities(selected.peer.capability_scores));
+  }
+  if (typeof selected.weighted_quality === "number") {
+    addField(detailFields, "Requested-capability match", formatScore(selected.weighted_quality));
+  }
+  if (!selected.peer && hop.decision_reason) {
+    addField(detailFields, "Raw reason", hop.decision_reason);
+  }
+  details.appendChild(detailFields);
+  reason.appendChild(details);
   return reason;
 }
 
@@ -479,7 +635,6 @@ function appendHopFields(parent, hop, options = {}) {
   const fields = document.createElement("div");
   fields.className = "trace-fields";
   addField(fields, "Node", nodeDisplayName(hop.node));
-  addField(fields, "Peer ID", hop.node?.peer_id || "unknown");
   if (hop.routed_by_peer_id) {
     addField(fields, "Selected by", hop.routed_by_peer_id);
   }
@@ -489,10 +644,19 @@ function appendHopFields(parent, hop, options = {}) {
   if (options.showDht && hop.discovery_capabilities) {
     addField(fields, "DHT lookups", (hop.discovery_capabilities || []).join(", ") || "none");
   }
-  if (options.showThreshold && typeof hop.routing_score_threshold === "number") {
-    addField(fields, "Minimum routing score", formatScore(hop.routing_score_threshold));
-  }
   parent.appendChild(fields);
+
+  if (hop.node?.peer_id || (options.showThreshold && typeof hop.routing_score_threshold === "number")) {
+    const details = makeDetails("Technical details");
+    const detailFields = document.createElement("div");
+    detailFields.className = "trace-fields";
+    addField(detailFields, "Peer ID", hop.node?.peer_id || "unknown");
+    if (options.showThreshold && typeof hop.routing_score_threshold === "number") {
+      addField(detailFields, "Minimum routing score", formatScore(hop.routing_score_threshold));
+    }
+    details.appendChild(detailFields);
+    parent.appendChild(details);
+  }
 }
 
 function appendStageDetails(parent, stage, hop) {
@@ -562,23 +726,28 @@ function stageStepText(stage) {
   };
 }
 
-function makeAnswerStep(stepNumber, hop) {
+function makeAnswerStep(stepNumber, hop, timing) {
+  const timingText = hop.routed_by_peer_id
+    ? timing?.forward
+    : timing?.generation;
   const section = makeTimelineStep(
     stepNumber,
     "Generate answer",
     hop.routed_by_peer_id
       ? "The selected node receives the forwarded query and produces the final answer."
-      : "The selected local node produces the final answer."
+      : "The selected local node produces the final answer.",
+    timingText
   );
   appendHopFields(section, hop);
   return section;
 }
 
-function makeForwardFailureStep(stepNumber, hop) {
+function makeForwardFailureStep(stepNumber, hop, timing) {
   const section = makeTimelineStep(
     stepNumber,
     "Forward failed",
-    "The selected node did not answer, so it is marked unreachable and excluded before routing is retried."
+    "The selected node did not answer, so it is marked unreachable and excluded before routing is retried.",
+    timing?.forward
   );
   const fields = document.createElement("div");
   fields.className = "trace-fields";
@@ -589,14 +758,54 @@ function makeForwardFailureStep(stepNumber, hop) {
   return section;
 }
 
+function makeTimingSummaryCard(trace) {
+  const summary = traceTimingSummary(trace);
+  if (!summary) {
+    return null;
+  }
+
+  const section = document.createElement("section");
+  section.className = "trace-timing-card";
+
+  const title = document.createElement("div");
+  title.className = "trace-timing-title";
+  title.textContent = "Timing";
+  section.appendChild(title);
+
+  const fields = document.createElement("div");
+  fields.className = "trace-fields";
+  addField(fields, "Total", formatDuration(summary.totalMs));
+  section.appendChild(fields);
+
+  const note = document.createElement("div");
+  note.className = "trace-timing-note";
+  note.textContent =
+    "Measured after the entry node receives the request. Browser-to-gateway time is not included.";
+  section.appendChild(note);
+
+  const details = makeDetails("Show timing events");
+  const list = document.createElement("div");
+  list.className = "trace-timing-list";
+  for (const row of summary.rows) {
+    const item = document.createElement("div");
+    item.className = "trace-timing-row";
+    item.textContent = `${formatDuration(row.elapsedMs)} total / +${formatDuration(row.durationMs)} - ${row.message}`;
+    list.appendChild(item);
+  }
+  details.appendChild(list);
+  section.appendChild(details);
+  return section;
+}
+
 function makeRoutingTrace(trace) {
   const details = document.createElement("div");
   details.className = "routing-trace";
+  const timing = makeTimingLookup(trace);
 
   let stepNumber = 1;
   for (const [index, hop] of (trace?.hops || []).entries()) {
     if (hop.action === "execute_forwarded_request") {
-      details.appendChild(makeAnswerStep(stepNumber, hop));
+      details.appendChild(makeAnswerStep(stepNumber, hop, timing));
       stepNumber += 1;
       continue;
     }
@@ -605,7 +814,8 @@ function makeRoutingTrace(trace) {
       const exhaustedStep = makeTimelineStep(
         stepNumber,
         "Stop routing",
-        "All forward attempts failed. The node returns no suitable answer instead of waiting longer."
+        "All forward attempts failed. The node returns no suitable answer instead of waiting longer.",
+        timing.forward
       );
       appendHopFields(exhaustedStep, hop);
       details.appendChild(exhaustedStep);
@@ -615,10 +825,11 @@ function makeRoutingTrace(trace) {
 
     const receiveStep = makeTimelineStep(
       stepNumber,
-      index === 0 ? "Send request to entry node" : "Continue routing",
+      index === 0 ? "Entry node receives request" : "Continue routing",
       index === 0
-        ? "The query is sent to the node selected in the UI."
-        : "Routing continues after a previous forwarding attempt failed."
+        ? "The node selected in the UI has received the query and starts handling it."
+        : "Routing continues after a previous forwarding attempt failed.",
+      index === 0 ? timing.request : timing.routing
     );
     appendHopFields(receiveStep, hop, { showNeeds: true });
     appendPreviousAttemptNote(receiveStep, hop);
@@ -630,7 +841,8 @@ function makeRoutingTrace(trace) {
       const stageStep = makeTimelineStep(
         stepNumber,
         `${text.title} (${stage.candidate_count || 0})`,
-        text.description
+        text.description,
+        stepDurationText(stage.duration_ms)
       );
       if (stage.name === "direct") {
         appendHopFields(stageStep, hop, { showDht: true, showThreshold: true });
@@ -644,7 +856,8 @@ function makeRoutingTrace(trace) {
       const recommendationStep = makeTimelineStep(
         stepNumber,
         "Recommendation result",
-        hop.recommendation_reason
+        hop.recommendation_reason,
+        recommendationTimingText(hop)
       );
       details.appendChild(recommendationStep);
       stepNumber += 1;
@@ -654,7 +867,8 @@ function makeRoutingTrace(trace) {
       const decisionStep = makeTimelineStep(
         stepNumber,
         "Choose answering node",
-        selectionReasonText(hop)
+        selectionReasonText(hop),
+        timing.decision || timing.routing
       );
       decisionStep.appendChild(makeDecisionReason(hop));
       details.appendChild(decisionStep);
@@ -665,7 +879,8 @@ function makeRoutingTrace(trace) {
       const forwardStep = makeTimelineStep(
         stepNumber,
         "Forward query",
-        "The query is sent to the selected node so it can generate the answer."
+        "The query is sent to the selected node so it can generate the answer.",
+        timing.forward
       );
       const fields = document.createElement("div");
       fields.className = "trace-fields";
@@ -677,12 +892,12 @@ function makeRoutingTrace(trace) {
     }
 
     if (hop.action === "forward_failed") {
-      details.appendChild(makeForwardFailureStep(stepNumber, hop));
+      details.appendChild(makeForwardFailureStep(stepNumber, hop, timing));
       stepNumber += 1;
     }
 
     if (isLocalAnswerAction(hop.action)) {
-      details.appendChild(makeAnswerStep(stepNumber, hop));
+      details.appendChild(makeAnswerStep(stepNumber, hop, timing));
       stepNumber += 1;
     }
   }
@@ -702,7 +917,12 @@ function makeTraceButton(traceId, trace, label) {
 
   const answeredBy = trace?.answered_by;
   const name = answeredBy ? nodeDisplayName(answeredBy) : "unknown node";
-  button.textContent = `Routing details - answered by ${name}`;
+  const totalMs = traceTotalDurationMs(trace);
+  const meta = [
+    `answered by ${name}`,
+    totalMs !== null ? formatDuration(totalMs) : null,
+  ].filter(Boolean);
+  button.textContent = `Routing details - ${meta.join(" - ")}`;
   button.addEventListener("click", () => selectRoutingTrace(traceId, trace, label));
   return button;
 }
@@ -795,12 +1015,22 @@ function renderTraceInspector() {
   const context = document.createElement("div");
   context.className = "inspector-context";
   const answeredBy = state.selectedTrace?.answered_by;
-  context.textContent = answeredBy
-    ? `${state.selectedTraceLabel} - answered by ${nodeDisplayName(answeredBy)}`
-    : state.selectedTraceLabel;
+  const totalMs = traceTotalDurationMs(state.selectedTrace);
+  const contextParts = [state.selectedTraceLabel];
+  if (answeredBy) {
+    contextParts.push(`answered by ${nodeDisplayName(answeredBy)}`);
+  }
+  if (totalMs !== null) {
+    contextParts.push(`network time ${formatDuration(totalMs)}`);
+  }
+  context.textContent = contextParts.join(" - ");
 
   header.append(heading, context);
   els.routingInspector.appendChild(header);
+  const timingCard = makeTimingSummaryCard(state.selectedTrace);
+  if (timingCard) {
+    els.routingInspector.appendChild(timingCard);
+  }
   els.routingInspector.appendChild(makeRoutingTrace(state.selectedTrace));
 }
 
