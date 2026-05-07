@@ -30,6 +30,7 @@ from src.transport import TransportService
 
 PROFILE_REPUBLISH_INTERVAL_S = 5 * 60.0
 CAPABILITY_ADVERTISE_INTERVAL_S = 30 * 60.0
+ADVERTISED_CAPABILITY_MIN_SCORE = 0.70
 
 
 class Node:
@@ -41,12 +42,50 @@ class Node:
     Stores peers through the peer registery.
     """
 
+    @staticmethod
+    def resolve_profile_capabilities(
+        advertised_capabilities: list[str] | None,
+        capability_scores: dict[str, float] | None,
+    ) -> tuple[list[str], dict[str, float]]:
+        """
+        Return the DHT-advertised capabilities and the complete score profile.
+
+        The DHT should index only strong capabilities. The full score profile is
+        still published in the node profile and used once a candidate is fetched.
+        """
+        explicit_capabilities = advertised_capabilities or (
+            [] if capability_scores else ["general"]
+        )
+        scores = capability_scores or {
+            capability: 1.0 for capability in explicit_capabilities
+        }
+
+        if not scores:
+            explicit_capabilities = ["general"]
+            scores = {"general": 1.0}
+
+        best_capability = max(scores, key=scores.get)
+        strong_capabilities = [
+            capability
+            for capability, score in sorted(
+                scores.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            if score >= ADVERTISED_CAPABILITY_MIN_SCORE
+        ]
+        advertised_capabilities = list(
+            dict.fromkeys([*explicit_capabilities, best_capability, *strong_capabilities])
+        )
+
+        return advertised_capabilities, scores
+
     def __init__(
         self,
         port: int = 0,
         seed: int | None = None,
         model_name: str = "dummy-model",
-        capabilities: list[str] | None = None,
+        advertised_capabilities: list[str] | None = None,
         capability_scores: dict[str, float] | None = None,
         dht_mode: DHTMode = DHTMode.SERVER,
         advertise_address_mode: str = "ipv6_loopback",
@@ -89,17 +128,16 @@ class Node:
         self.host = new_host(key_pair=create_new_key_pair(secret))
         self.transport = TransportService()
 
-        # Create the Profile of the current Node
-        resolved_capabilities = capabilities or ["general"]
-        resolved_scores = capability_scores or {
-            cap: 1.0 for cap in resolved_capabilities
-        }
+        advertised_capabilities, resolved_scores = self.resolve_profile_capabilities(
+            advertised_capabilities,
+            capability_scores,
+        )
 
         self.local_profile = NodeProfile(
             peer_id=self.host.get_id().to_string(),
             addresses=[],
             model_name=model_name,
-            capabilities=resolved_capabilities,
+            advertised_capabilities=advertised_capabilities,
             capability_scores=resolved_scores,
             is_available=True,
         )
@@ -250,7 +288,10 @@ class Node:
         """
         log("NODE", f"I am {self.local_profile.peer_id}")
         log("NODE", f"Model: {self.local_profile.model_name}")
-        log("NODE", f"Capabilities: {self.local_profile.capabilities}")
+        log(
+            "NODE",
+            f"DHT advertised capabilities: {self.local_profile.advertised_capabilities}",
+        )
         log("NODE", f"Capability scores: {self.local_profile.capability_scores}")
         log("NODE", f"Agent backend: {self.agent_backend}")
         if self.agent_backend == "ollama":
@@ -302,7 +343,8 @@ class Node:
             "NODE",
             f"Publishing self profile peer_id={self.local_profile.peer_id} "
             f"model={self.local_profile.model_name} "
-            f"caps={self.local_profile.capabilities} "
+            f"dht_caps={self.local_profile.advertised_capabilities} "
+            f"capability_scores={self.local_profile.capability_scores} "
             f"addresses={self.local_profile.addresses} "
             f"ts={self.local_profile.timestamp_ms}",
         )
@@ -312,6 +354,11 @@ class Node:
         await self.dht_service.publish_profile(self.local_profile)
 
     async def advertise_capabilities_to_dht(self) -> None:
+        log(
+            "DHT",
+            f"Advertising DHT capability indexes peer_id={self.local_profile.peer_id} "
+            f"dht_caps={self.local_profile.advertised_capabilities}",
+        )
         await self.dht_service.advertise_capabilities(self.local_profile)
 
     async def publish_self_to_dht(self) -> None:

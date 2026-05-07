@@ -14,7 +14,9 @@ from src.ollama_utils import OllamaError, check_ollama_ready
 
 
 async def async_main(args):
-    capabilities = [c.strip() for c in args.capabilities.split(",") if c.strip()]
+    advertised_capabilities = [
+        c.strip() for c in args.capabilities.split(",") if c.strip()
+    ]
     capability_scores = (
         json.loads(args.capability_scores) if args.capability_scores else None
     )
@@ -37,7 +39,7 @@ async def async_main(args):
         port=args.port,
         seed=args.seed,
         model_name=args.model_name,
-        capabilities=capabilities,
+        advertised_capabilities=advertised_capabilities,
         capability_scores=capability_scores,
         dht_mode=dht_mode,
         advertise_address_mode=args.advertise_address_mode,

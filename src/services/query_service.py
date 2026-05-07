@@ -65,7 +65,7 @@ class QueryService:
         return {
             "peer_id": profile.peer_id,
             "model_name": profile.model_name,
-            "capabilities": profile.capabilities,
+            "advertised_capabilities": profile.advertised_capabilities,
             "capability_scores": profile.capability_scores,
         }
 

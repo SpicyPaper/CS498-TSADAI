@@ -65,7 +65,7 @@ class RecommendationService:
                 continue
             if not profile.is_available:
                 continue
-            if capability not in profile.capabilities:
+            if capability not in profile.advertised_capabilities:
                 continue
 
             candidates.append(profile)
@@ -106,7 +106,7 @@ class RecommendationService:
                 profile.peer_id
                 for profile in self.peer_registry.all_profiles()
                 if profile.peer_id != self.local_peer_id
-                and capability in profile.capabilities
+                and capability in profile.advertised_capabilities
             ]
 
             reply = {

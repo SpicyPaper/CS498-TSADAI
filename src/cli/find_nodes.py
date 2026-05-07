@@ -24,7 +24,7 @@ async def async_main(args) -> None:
     node = Node(
         port=args.port,
         model_name="dht-debug-client",
-        capabilities=["debug"],
+        advertised_capabilities=["debug"],
         dht_mode=DHTMode.CLIENT,
         enable_gossip=False,
         advertise_address_mode=args.advertise_address_mode,
@@ -54,7 +54,7 @@ async def async_main(args) -> None:
                     continue
 
                 print(f"model: {profile.model_name}")
-                print(f"capabilities: {profile.capabilities}")
+                print(f"advertised_capabilities: {profile.advertised_capabilities}")
                 print(f"is_available: {profile.is_available}")
                 print(f"timestamp_ms: {profile.timestamp_ms}")
                 print("addresses:")

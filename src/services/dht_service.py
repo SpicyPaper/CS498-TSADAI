@@ -135,7 +135,7 @@ class DHTService:
     ) -> dict[str, bool]:
         results: dict[str, bool] = {}
 
-        for capability in profile.capabilities:
+        for capability in profile.advertised_capabilities:
             key = self.capability_key(capability)
             ok = False
 

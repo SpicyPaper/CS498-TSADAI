@@ -1,3 +1,5 @@
+import time
+
 from libp2p.abc import IHost
 from libp2p.peer.id import ID
 
@@ -87,7 +89,8 @@ class RoutingService:
                 log(
                     "ROUTING",
                     f"Discovered new peer from DHT peer_id={profile.peer_id} "
-                    f"caps={profile.capabilities} addresses={profile.addresses}",
+                    f"dht_caps={profile.advertised_capabilities} "
+                    f"addresses={profile.addresses}",
                 )
 
     async def route_query(self, prompt: str, context: QueryContext) -> RoutingDecision:
@@ -133,23 +136,23 @@ class RoutingService:
             log(
                 "ROUTING",
                 f"No candidate found for capability_scores={required_capabilities}, "
-                f"trying general fallback",
+                f"retrying with general",
             )
             initial_trace = trace
-            fallback_candidate, fallback_trace = await self._search_scored_capabilities(
+            general_candidate, general_trace = await self._search_scored_capabilities(
                 {"general": 0.5},
                 excluded,
             )
-            fallback_trace["previous_attempt"] = initial_trace
-            trace = fallback_trace
-            candidate = fallback_candidate
+            general_trace["previous_attempt"] = initial_trace
+            trace = general_trace
+            candidate = general_candidate
             selected_capabilities = {"general": 0.5}
 
         if candidate is None:
             log(
                 "ROUTING",
                 f"No candidate found for capability_scores={required_capabilities} "
-                f"and no candidate found for general fallback",
+                f"and no candidate found for general retry",
             )
             return RoutingDecision(
                 execute_locally=False,
@@ -256,6 +259,7 @@ class RoutingService:
         """
         capability_scores = self._normalize_capability_scores(capability_scores)
         discovery_capabilities = self._discovery_capabilities(capability_scores)
+        routing_started_at = time.perf_counter()
         trace = {
             "local_peer_id": self.local_profile.peer_id,
             "required_capabilities": capability_scores,
@@ -269,6 +273,13 @@ class RoutingService:
             "stages": [],
         }
 
+        def elapsed_ms(started_at: float) -> float:
+            return round((time.perf_counter() - started_at) * 1000, 1)
+
+        def finish_trace() -> None:
+            trace["routing_duration_ms"] = elapsed_ms(routing_started_at)
+
+        direct_started_at = time.perf_counter()
         for capability in discovery_capabilities:
             await self.refresh_candidates_from_dht(capability)
 
@@ -299,9 +310,11 @@ class RoutingService:
             include_local=True,
             source="direct",
         )
+        direct_duration_ms = elapsed_ms(direct_started_at)
         trace["stages"].append(
             {
                 "name": "direct",
+                "duration_ms": direct_duration_ms,
                 "candidate_count": len(direct_candidates),
                 "candidates": [candidate[-1] for candidate in direct_candidates],
                 "skipped_candidates": []
@@ -333,6 +346,7 @@ class RoutingService:
                 f"Selected direct candidate routing_score={best_direct[2]:.2f} "
                 f"threshold={MIN_ROUTING_SCORE_THRESHOLD:.2f}",
             )
+            finish_trace()
             return self._candidate_from_evaluation(best_direct), trace
 
         if best_direct is None:
@@ -345,12 +359,17 @@ class RoutingService:
                 f"threshold={MIN_ROUTING_SCORE_THRESHOLD:.2f}",
             )
 
+        recommendation_started_at = time.perf_counter()
         recommended_remote_candidates = await self._get_recommended_candidates(
             direct_remote_candidates,
             capability_scores,
             excluded_peer_ids,
             trace,
         )
+        recommendation_request_count = len(trace.get("recommendation_requests", []))
+        trace["recommendation_request_count"] = recommendation_request_count
+        if recommendation_request_count > 0:
+            trace["recommendation_duration_ms"] = elapsed_ms(recommendation_started_at)
         trace["recommendation_status"] = "used"
         if recommended_remote_candidates:
             trace["recommendation_reason"] = (
@@ -358,9 +377,16 @@ class RoutingService:
                 "direct peers were asked for recommendations."
             )
         elif self.recommendation_service is None:
+            trace["recommendation_status"] = "disabled"
             trace["recommendation_reason"] = (
                 "No direct candidate reached the minimum routing score, but "
                 "the recommendation service is not enabled on this node."
+            )
+        elif recommendation_request_count == 0:
+            trace["recommendation_status"] = "no_requests"
+            trace["recommendation_reason"] = (
+                "No direct candidate reached the minimum routing score, but "
+                "there was no direct peer suitable to ask for recommendations."
             )
         else:
             trace["recommendation_reason"] = (
@@ -373,6 +399,7 @@ class RoutingService:
             f"Recommendation candidate count={len(recommended_remote_candidates)}",
         )
 
+        recommended_evaluation_started_at = time.perf_counter()
         recommended_candidates = await self._evaluate_candidate_pool(
             recommended_remote_candidates,
             capability_scores,
@@ -380,9 +407,13 @@ class RoutingService:
             source="recommended",
             recommended_sources=trace.get("recommended_sources", {}),
         )
+        recommended_evaluation_duration_ms = elapsed_ms(
+            recommended_evaluation_started_at
+        )
         trace["stages"].append(
             {
                 "name": "recommended",
+                "duration_ms": recommended_evaluation_duration_ms,
                 "candidate_count": len(recommended_candidates),
                 "candidates": [candidate[-1] for candidate in recommended_candidates],
             }
@@ -399,6 +430,7 @@ class RoutingService:
                 f"Selected recommended candidate routing_score={best_recommended[2]:.2f} "
                 f"threshold={MIN_ROUTING_SCORE_THRESHOLD:.2f}",
             )
+            finish_trace()
             return self._candidate_from_evaluation(best_recommended), trace
 
         best_seen = self._best_candidate(direct_candidates + recommended_candidates)
@@ -411,6 +443,7 @@ class RoutingService:
                 f"threshold={MIN_ROUTING_SCORE_THRESHOLD:.2f}",
             )
 
+        finish_trace()
         return (
             self._candidate_from_evaluation(best_seen) if best_seen is not None else None
         ), trace
@@ -504,7 +537,9 @@ class RoutingService:
 
         for capability in capability_scores:
             capable_sources = [
-                profile for profile in sources if capability in profile.capabilities
+                profile
+                for profile in sources
+                if capability in profile.advertised_capabilities
             ]
 
             log(
@@ -591,7 +626,8 @@ class RoutingService:
         return {
             "peer_id": profile.peer_id,
             "model_name": profile.model_name,
-            "capabilities": profile.capabilities,
+            "advertised_capabilities": profile.advertised_capabilities,
+            "capability_scores": profile.capability_scores,
             "addresses": profile.addresses,
             "is_available": profile.is_available,
         }

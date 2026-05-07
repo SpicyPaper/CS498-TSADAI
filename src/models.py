@@ -34,7 +34,7 @@ class NodeProfile:
     peer_id: str
     addresses: list[str]
     model_name: str
-    capabilities: list[str] = field(default_factory=list)
+    advertised_capabilities: list[str] = field(default_factory=list)
     capability_scores: dict[str, float] = field(default_factory=dict)
     is_available: bool = True
     timestamp_ms: int = field(default_factory=lambda: int(time.time() * 1000))

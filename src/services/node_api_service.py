@@ -75,6 +75,10 @@ class NodeAPIService:
         with self._progress_lock:
             self._progress_by_query_id[query_id] = []
 
+    def _progress_events(self, query_id: str) -> list[dict]:
+        with self._progress_lock:
+            return list(self._progress_by_query_id.get(query_id, []))
+
     async def query(self, request: NodeQueryRequest):
         if not request.prompt.strip():
             return JSONResponse(
@@ -105,11 +109,16 @@ class NodeAPIService:
                 status_code=500,
             )
 
+        if request.query_id and isinstance(reply, dict):
+            events = self._progress_events(request.query_id)
+            reply["progress_events"] = events
+            if isinstance(reply.get("routing_trace"), dict):
+                reply["routing_trace"]["progress_events"] = events
+
         return reply
 
     async def query_progress(self, query_id: str):
-        with self._progress_lock:
-            events = list(self._progress_by_query_id.get(query_id, []))
+        events = self._progress_events(query_id)
 
         return {
             "query_id": query_id,

@@ -31,7 +31,8 @@ class PeerRegistry:
             log(
                 "REGISTRY",
                 f"Inserted new profile peer_id={profile.peer_id} "
-                f"model={profile.model_name} caps={profile.capabilities} "
+                f"model={profile.model_name} "
+                f"dht_caps={profile.advertised_capabilities} "
                 f"scores={profile.capability_scores} "
                 f"addresses={profile.addresses} ts={profile.timestamp_ms}",
             )
@@ -41,8 +42,11 @@ class PeerRegistry:
                 changed.append("addresses")
             if old_profile.model_name != profile.model_name:
                 changed.append("model_name")
-            if old_profile.capabilities != profile.capabilities:
-                changed.append("capabilities")
+            if (
+                old_profile.advertised_capabilities
+                != profile.advertised_capabilities
+            ):
+                changed.append("advertised_capabilities")
             if old_profile.is_available != profile.is_available:
                 changed.append("is_available")
             if old_profile.timestamp_ms != profile.timestamp_ms:
@@ -57,7 +61,8 @@ class PeerRegistry:
                 "REGISTRY",
                 f"Updated profile peer_id={profile.peer_id} "
                 f"changed={changed_str} "
-                f"model={profile.model_name} caps={profile.capabilities} "
+                f"model={profile.model_name} "
+                f"dht_caps={profile.advertised_capabilities} "
                 f"scores={profile.capability_scores} "
                 f"addresses={profile.addresses} ts={profile.timestamp_ms}",
             )
@@ -127,7 +132,7 @@ class PeerRegistry:
         for peer_id, profile in self._profiles.items():
             if peer_id in exclude_peer_ids:
                 continue
-            if capability not in profile.capabilities:
+            if capability not in profile.advertised_capabilities:
                 continue
             if not self.is_peer_fresh_live(peer_id, max_age_ms):
                 continue
