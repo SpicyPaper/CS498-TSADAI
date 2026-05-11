@@ -98,7 +98,7 @@ class Node:
         enable_gossip: bool = False,
         agent_backend: str = "dummy",
         classifier_backend: str = "dummy",
-        local_model_id: str = "Qwen/Qwen3-0.6B",
+        local_model_id: str = "Qwen/Qwen3-1.7B",
         local_classifier_model_id: str | None = None,
         local_max_new_tokens: int = 512,
         local_enable_thinking: bool = False,

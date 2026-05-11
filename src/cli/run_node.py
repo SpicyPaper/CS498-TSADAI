@@ -50,7 +50,7 @@ def configure_from_env(args) -> None:
         args.local_enable_thinking = env_bool("LOCAL_ENABLE_THINKING")
         args.local_timeout = env_float("LOCAL_TIMEOUT")
     else:
-        args.local_model_id = optional_env("LOCAL_MODEL_ID", "Qwen/Qwen3-0.6B")
+        args.local_model_id = optional_env("LOCAL_MODEL_ID", "Qwen/Qwen3-1.7B")
         args.local_classifier_model_id = optional_env(
             "LOCAL_CLASSIFIER_MODEL_ID",
             args.local_model_id,

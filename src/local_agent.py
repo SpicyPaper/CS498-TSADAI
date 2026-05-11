@@ -32,7 +32,7 @@ class DummyAgent(LocalAgent):
 class LocalTransformersAgent(LocalAgent):
     def __init__(
         self,
-        model_id: str = "Qwen/Qwen3-0.6B",
+        model_id: str = "Qwen/Qwen3-1.7B",
         max_new_tokens: int = 512,
         system_prompt: str | None = None,
         temperature: float = 0.7,
