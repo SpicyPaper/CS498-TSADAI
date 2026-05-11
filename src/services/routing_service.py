@@ -10,6 +10,7 @@ from src.peer_registry import PeerRegistry
 from src.services.dht_service import DHTService
 from src.services.health_service import HealthService
 from src.services.capability_classifier import CAPABILITIES, CapabilityClassifier
+from src.services.profile_service import ProfileService
 from src.services.recommendation_service import RecommendationService
 
 MIN_ROUTING_SCORE_THRESHOLD = 0.65
@@ -48,6 +49,7 @@ class RoutingService:
         local_profile: NodeProfile,
         peer_registry: PeerRegistry,
         dht_service: DHTService,
+        profile_service: ProfileService,
         live_ttl_ms: int,
         health_service: HealthService | None = None,
         capability_classifier: CapabilityClassifier | None = None,
@@ -57,6 +59,7 @@ class RoutingService:
         self.local_profile = local_profile
         self.peer_registry = peer_registry
         self.dht_service = dht_service
+        self.profile_service = profile_service
         self.health_service = health_service
         self.live_ttl_ms = live_ttl_ms
         self.capability_classifier = capability_classifier
@@ -64,22 +67,28 @@ class RoutingService:
 
     async def refresh_candidates_from_dht(self, capability: str) -> None:
         """
-        Ask the DHT for providers of a capability, fetch their profiles,
-        and store them in the local cache.
+        Ask the DHT for providers of a capability, fetch profiles directly from
+        those peers, and store them in the local cache.
         """
         if self.dht_service is None:
             return
 
-        profiles = await self.dht_service.fetch_capability_profiles(
-            capability,
-            exclude_peer_ids={self.local_profile.peer_id},
-        )
+        provider_infos = await self.dht_service.find_capability_providers(capability)
 
-        for profile in profiles:
+        for provider in provider_infos:
+            peer_id = provider.peer_id.to_string()
+            if peer_id == self.local_profile.peer_id:
+                continue
+
+            profile = await self._request_provider_profile(provider)
+            if profile is None:
+                log("ROUTING", f"Could not fetch direct profile peer_id={peer_id}")
+                continue
+
             if not profile.is_available:
                 log(
                     "ROUTING",
-                    f"Ignored unavailable DHT profile peer_id={profile.peer_id}",
+                    f"Ignored unavailable direct profile peer_id={profile.peer_id}",
                 )
                 continue
 
@@ -89,7 +98,7 @@ class RoutingService:
             if old_profile is None:
                 log(
                     "ROUTING",
-                    f"Discovered new peer from DHT peer_id={profile.peer_id} "
+                    f"Discovered new peer from DHT provider peer_id={profile.peer_id} "
                     f"dht_caps={profile.advertised_capabilities} "
                     f"addresses={profile.addresses}",
                 )
@@ -651,8 +660,11 @@ class RoutingService:
                         continue
 
                     profile = self.peer_registry.get_profile(peer_id)
-                    if profile is None and self.dht_service is not None:
-                        profile = await self.dht_service.get_profile(peer_id)
+                    if profile is None:
+                        profile = await self._fetch_profile_from_dht_provider(
+                            peer_id,
+                            capability,
+                        )
                         if profile is not None:
                             self.peer_registry.upsert_profile(profile)
 
@@ -677,6 +689,32 @@ class RoutingService:
         trace["recommendation_requests"] = recommendation_requests
         trace["recommended_sources"] = recommended_sources
         return list(recommended_by_id.values())
+
+    async def _request_provider_profile(self, provider) -> NodeProfile | None:
+        peer_id = provider.peer_id.to_string()
+        addresses = [
+            f"{address}/p2p/{peer_id}"
+            for address in getattr(provider, "addrs", [])
+        ]
+        return await self.profile_service.request_profile(
+            provider.peer_id,
+            addresses=addresses,
+        )
+
+    async def _fetch_profile_from_dht_provider(
+        self,
+        peer_id: str,
+        capability: str,
+    ) -> NodeProfile | None:
+        if self.dht_service is None:
+            return await self.profile_service.request_profile(ID.from_base58(peer_id))
+
+        providers = await self.dht_service.find_capability_providers(capability)
+        for provider in providers:
+            if provider.peer_id.to_string() == peer_id:
+                return await self._request_provider_profile(provider)
+
+        return await self.profile_service.request_profile(ID.from_base58(peer_id))
 
     def _has_any_requested_capability(
         self,

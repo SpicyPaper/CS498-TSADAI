@@ -9,6 +9,7 @@ from src.peer_registry import PeerRegistry
 from src.protocols import RECOMMEND_PROTOCOL
 from src.transport import TransportService
 from src.services.dht_service import DHTService
+from src.services.profile_service import ProfileService
 
 
 class RecommendationService:
@@ -24,27 +25,41 @@ class RecommendationService:
         peer_registry: PeerRegistry,
         local_peer_id: str,
         dht_service: DHTService,
+        profile_service: ProfileService,
     ) -> None:
         self.host = host
         self.transport = transport
         self.peer_registry = peer_registry
         self.local_peer_id = local_peer_id
         self.dht_service = dht_service
+        self.profile_service = profile_service
 
     async def _refresh_candidates_from_dht(self, capability: str) -> None:
         if self.dht_service is None:
             return
 
-        profiles = await self.dht_service.fetch_capability_profiles(
-            capability,
-            exclude_peer_ids={self.local_peer_id},
-        )
+        provider_infos = await self.dht_service.find_capability_providers(capability)
 
-        for profile in profiles:
+        for provider in provider_infos:
+            peer_id = provider.peer_id.to_string()
+            if peer_id == self.local_peer_id:
+                continue
+
+            addresses = [
+                f"{address}/p2p/{peer_id}"
+                for address in getattr(provider, "addrs", [])
+            ]
+            profile = await self.profile_service.request_profile(
+                provider.peer_id,
+                addresses=addresses,
+            )
+            if profile is None:
+                continue
+
             if not profile.is_available:
                 log(
                     "RECOMMEND",
-                    f"Ignored unavailable DHT profile peer_id={profile.peer_id}",
+                    f"Ignored unavailable direct profile peer_id={profile.peer_id}",
                 )
                 continue
 

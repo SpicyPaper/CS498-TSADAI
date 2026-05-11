@@ -5,7 +5,7 @@ This debug CLI:
 - starts a temporary libp2p host
 - connects to one or more bootstrap peers
 - asks the DHT for providers of a capability
-- fetches and prints their profiles
+- fetches and prints their profiles directly from the providers
 - exits
 """
 
@@ -35,23 +35,29 @@ async def async_main(args) -> None:
         async with node.dht_service.run():
             await connect_to_bootstrap_peers(node.host, args.bootstrap)
 
-            provider_ids = await node.dht_service.find_capability_provider_ids(
-                args.capability
-            )
+            providers = await node.dht_service.find_capability_providers(args.capability)
 
             print()
             print(
-                f"Found {len(provider_ids)} provider id(s) "
+                f"Found {len(providers)} provider id(s) "
                 f"for capability={args.capability!r}"
             )
 
-            for peer_id in provider_ids:
+            for provider in providers:
+                peer_id = provider.peer_id.to_string()
+                addresses = [
+                    f"{address}/p2p/{peer_id}"
+                    for address in getattr(provider, "addrs", [])
+                ]
                 print()
                 print(f"peer_id: {peer_id}")
 
-                profile = await node.dht_service.get_profile(peer_id)
+                profile = await node.profile_service.request_profile(
+                    provider.peer_id,
+                    addresses=addresses,
+                )
                 if profile is None:
-                    print("profile: <not found in DHT>")
+                    print("profile: <direct request failed>")
                     continue
 
                 print(f"model: {profile.model_name}")

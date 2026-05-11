@@ -16,10 +16,16 @@ from src.network_utils import connect_to_bootstrap_peers
 from src.logging_utils import log
 from src.models import NodeProfile, QueryContext
 from src.peer_registry import PeerRegistry
-from src.protocols import PING_PROTOCOL, QUERY_PROTOCOL, RECOMMEND_PROTOCOL
+from src.protocols import (
+    PING_PROTOCOL,
+    PROFILE_PROTOCOL,
+    QUERY_PROTOCOL,
+    RECOMMEND_PROTOCOL,
+)
 from src.services.dht_service import DHTService
 from src.services.health_service import HealthService
 from src.services.ping_service import PingService
+from src.services.profile_service import ProfileService
 from src.services.pubsub_service import PubSubService
 from src.services.query_service import QueryService
 from src.services.routing_service import RoutingService
@@ -32,7 +38,6 @@ from src.services.capability_classifier import (
 from src.transport import TransportService
 
 
-PROFILE_REPUBLISH_INTERVAL_S = 5 * 60.0
 CAPABILITY_ADVERTISE_INTERVAL_S = 30 * 60.0
 ADVERTISED_CAPABILITY_MIN_SCORE = 0.70
 
@@ -55,7 +60,7 @@ class Node:
         Return the DHT-advertised capabilities and the complete score profile.
 
         The DHT should index only strong capabilities. The full score profile is
-        still published in the node profile and used once a candidate is fetched.
+        served directly through the profile protocol when a peer needs it.
         """
         explicit_capabilities = advertised_capabilities or (
             [] if capability_scores else ["general"]
@@ -204,6 +209,11 @@ class Node:
             raise ValueError(f"Unsupported agent_backend: {agent_backend}")
 
         self.ping_service = PingService(self.transport)
+        self.profile_service = ProfileService(
+            self.host,
+            self.transport,
+            self.current_local_profile,
+        )
 
         self.dht_service = DHTService(self.host, mode=dht_mode)
 
@@ -219,6 +229,7 @@ class Node:
             self.peer_registry,
             self.local_profile.peer_id,
             self.dht_service,
+            self.profile_service,
         )
 
         if classifier_backend == "aiass":
@@ -266,6 +277,7 @@ class Node:
             self.local_profile,
             self.peer_registry,
             self.dht_service,
+            self.profile_service,
             300 * 1000,  # 5min
             self.health_service,
             capability_classifier,
@@ -288,7 +300,7 @@ class Node:
         if self.enable_gossip:
             self.pubsub_service = PubSubService(
                 self.host,
-                self.dht_service,
+                self.profile_service,
                 self.peer_registry,
                 self.local_profile.peer_id,
             )
@@ -318,20 +330,6 @@ class Node:
         raise ValueError(
             f"Unsupported advertise_address_mode: {self.advertise_address_mode}"
         )
-
-    async def periodically_publish_profile_to_dht(
-        self,
-        interval_s: float = PROFILE_REPUBLISH_INTERVAL_S,
-    ) -> None:
-        while True:
-            await trio.sleep(interval_s)
-
-            try:
-                await self.publish_profile_to_dht()
-                if self.enable_gossip:
-                    await self.announce_self_via_gossip()
-            except Exception as exc:
-                log("DHT", f"Periodic profile publish failed: {exc}")
 
     async def periodically_advertise_capabilities_to_dht(
         self,
@@ -437,6 +435,11 @@ class Node:
         """
         self.host.set_stream_handler(PING_PROTOCOL, self.ping_service.handle_stream)
         log("NODE", f"Registered protocol handler: {PING_PROTOCOL}")
+        self.host.set_stream_handler(
+            PROFILE_PROTOCOL,
+            self.profile_service.handle_stream,
+        )
+        log("NODE", f"Registered protocol handler: {PROFILE_PROTOCOL}")
         self.host.set_stream_handler(QUERY_PROTOCOL, self.query_service.handle_stream)
         log("NODE", f"Registered protocol handler: {QUERY_PROTOCOL}")
         self.host.set_stream_handler(
@@ -450,7 +453,7 @@ class Node:
 
         log(
             "NODE",
-            f"Publishing self profile peer_id={self.local_profile.peer_id} "
+            f"Refreshed local profile peer_id={self.local_profile.peer_id} "
             f"model={self.local_profile.model_name} "
             f"dht_caps={self.local_profile.advertised_capabilities} "
             f"capability_scores={self.local_profile.capability_scores} "
@@ -458,11 +461,12 @@ class Node:
             f"ts={self.local_profile.timestamp_ms}",
         )
 
-    async def publish_profile_to_dht(self) -> None:
+    async def current_local_profile(self) -> NodeProfile:
         await self.refresh_local_profile()
-        await self.dht_service.publish_profile(self.local_profile)
+        return self.local_profile
 
     async def advertise_capabilities_to_dht(self) -> None:
+        await self.refresh_local_profile()
         log(
             "DHT",
             f"Advertising DHT capability indexes peer_id={self.local_profile.peer_id} "
@@ -471,7 +475,6 @@ class Node:
         await self.dht_service.advertise_capabilities(self.local_profile)
 
     async def publish_self_to_dht(self) -> None:
-        await self.publish_profile_to_dht()
         await self.advertise_capabilities_to_dht()
 
     async def announce_self_via_gossip(self) -> None:
@@ -522,7 +525,6 @@ class Node:
             trio.open_nursery() as nursery,
         ):
             async with self.dht_service.run():
-                nursery.start_soon(self.periodically_publish_profile_to_dht)
                 nursery.start_soon(self.periodically_advertise_capabilities_to_dht)
                 if api_port is not None:
                     from src.services.node_api_service import NodeAPIService

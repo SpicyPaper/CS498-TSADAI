@@ -4,7 +4,6 @@ import trio
 from libp2p.abc import IHost
 from libp2p.kad_dht.kad_dht import DHTMode, KadDHT
 from libp2p.peer.peerinfo import PeerInfo
-from libp2p.records.validator import Validator
 from libp2p.tools.async_service import background_trio_service
 
 from src.logging_utils import log
@@ -14,41 +13,17 @@ from src.models import NodeProfile
 DHT_OPERATION_TIMEOUT_S = 30.0
 
 
-class ProfileValidator(Validator):
-    """
-    Minimal validator for the /profile namespace.
-
-    For now we just require non-empty bytes.
-    """
-
-    def validate(self, key: str, value: bytes) -> None:
-        if not value:
-            raise ValueError("profile value cannot be empty")
-
-    def select(self, key: str, values: list[bytes]) -> int:
-        # Keep first value for now.
-        return 0
-
-
 class DHTService:
     """
     Kad-DHT service for:
-    - publishing node profiles
-    - retrieving profiles by peer_id
     - advertising capability providers
     - finding providers for a capability
     """
-
-    PROFILE_NAMESPACE = "profile"
 
     def __init__(self, host: IHost, mode: DHTMode = DHTMode.SERVER) -> None:
         self.host = host
         self.mode = mode
         self.dht = KadDHT(host, mode, enable_random_walk=(mode == DHTMode.SERVER))
-        self.dht.register_validator(self.PROFILE_NAMESPACE, ProfileValidator())
-
-    def profile_key(self, peer_id: str) -> str:
-        return f"/{self.PROFILE_NAMESPACE}/{peer_id}"
 
     def capability_key(self, capability: str) -> str:
         return f"capability:{capability}"
@@ -88,45 +63,6 @@ class DHTService:
             return False
 
         return True
-
-    async def publish_profile(
-        self,
-        profile: NodeProfile,
-        timeout_s: float = DHT_OPERATION_TIMEOUT_S,
-    ) -> bool:
-        key = self.profile_key(profile.peer_id)
-        value = profile.to_json_bytes()
-
-        with trio.move_on_after(timeout_s) as cancel_scope:
-            await self.dht.put_value(key, value)
-
-        if cancel_scope.cancelled_caught:
-            log("DHT", f"Publish profile timed out key={key} after {timeout_s:.1f}s")
-            return False
-
-        log("DHT", f"Published profile key={key}")
-        return True
-
-    async def get_profile(
-        self,
-        peer_id: str,
-        timeout_s: float = DHT_OPERATION_TIMEOUT_S,
-    ) -> NodeProfile | None:
-        key = self.profile_key(peer_id)
-        raw = None
-
-        with trio.move_on_after(timeout_s) as cancel_scope:
-            raw = await self.dht.get_value(key)
-
-        if cancel_scope.cancelled_caught:
-            log("DHT", f"Get profile timed out key={key} after {timeout_s:.1f}s")
-            return None
-
-        if not raw:
-            return None
-        profile = NodeProfile.from_json_bytes(raw)
-        log("DHT", f"Fetched profile for peer_id={peer_id}")
-        return profile
 
     async def advertise_capabilities(
         self,
@@ -200,25 +136,3 @@ class DHTService:
             f"Provider ID list for capability={capability}: peer_ids={peer_ids}",
         )
         return peer_ids
-
-    async def fetch_capability_profiles(
-        self,
-        capability: str,
-        exclude_peer_ids: set[str] | None = None,
-    ) -> list[NodeProfile]:
-        exclude_peer_ids = exclude_peer_ids or set()
-
-        provider_ids = await self.find_capability_provider_ids(capability)
-
-        profiles: list[NodeProfile] = []
-        for peer_id in provider_ids:
-            if peer_id in exclude_peer_ids:
-                continue
-
-            profile = await self.get_profile(peer_id)
-            if profile is None:
-                continue
-
-            profiles.append(profile)
-
-        return profiles

@@ -10,10 +10,11 @@ from libp2p.pubsub.gossipsub import (
     PROTOCOL_ID_V12,
 )
 from libp2p.pubsub.pubsub import Pubsub
+from libp2p.peer.id import ID
 from libp2p.tools.async_service import background_trio_service
 
 from src.logging_utils import log
-from src.services.dht_service import DHTService
+from src.services.profile_service import ProfileService
 from src.peer_registry import PeerRegistry
 
 
@@ -25,18 +26,18 @@ class PubSubService:
     GossipSub service.
 
     Use gossip only for fast notifications, not as the source of truth.
-    When a profile update is received, refresh from DHT.
+    When a profile update is received, refresh directly from the peer.
     """
 
     def __init__(
         self,
         host: IHost,
-        dht_service: DHTService,
+        profile_service: ProfileService,
         peer_registry: PeerRegistry,
         local_peer_id: str,
     ) -> None:
         self.host = host
-        self.dht_service = dht_service
+        self.profile_service = profile_service
         self.peer_registry = peer_registry
         self.local_peer_id = local_peer_id
 
@@ -91,10 +92,10 @@ class PubSubService:
                 log("GOSSIP", f"Ignoring self profile update for peer_id={peer_id}")
                 continue
 
-            profile = await self.dht_service.get_profile(peer_id)
+            profile = await self.profile_service.request_profile(ID.from_base58(peer_id))
             if profile is None:
-                log("GOSSIP", f"No DHT profile found for peer_id={peer_id}")
+                log("GOSSIP", f"No direct profile found for peer_id={peer_id}")
                 continue
 
             self.peer_registry.upsert_profile(profile)
-            log("GOSSIP", f"Refreshed profile from DHT for peer_id={peer_id}")
+            log("GOSSIP", f"Refreshed profile directly for peer_id={peer_id}")
