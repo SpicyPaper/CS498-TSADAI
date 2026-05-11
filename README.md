@@ -7,7 +7,7 @@ Nodes advertise their capabilities through a libp2p Kademlia DHT, discover suita
 ## Features
 
 - libp2p peer-to-peer networking
-- Kademlia DHT for profile and capability discovery
+- Kademlia DHT for capability discovery
 - capability routing: general, math, programming, writing, summarization, research, planning, creative
 - LLM-based capability classification at the entry node
 - local peer registry with liveness tracking
@@ -210,9 +210,9 @@ Send a programming query:
 
 The entry node classifies the query capability, then may answer locally or forward the query to a better capability match.
 
-Nodes publish two capability-related fields in their DHT profile:
-`advertised_capabilities` are the strong capabilities indexed in the DHT, while
-`capability_scores` is the full score profile used after a candidate is fetched.
+Nodes advertise only their strong `advertised_capabilities` in the DHT. When a
+router needs more detail, it opens a direct profile request to the provider and
+fetches the full profile, including `capability_scores`.
 
 Useful capability test prompts:
 
@@ -286,8 +286,9 @@ providers, caches candidates locally, checks liveness, and forwards to a
 suitable peer. The selected node answers with `REQUEST_BACKEND`. Forwarded nodes
 reuse the capability from the query context instead of classifying again.
 
-The DHT returns providers for advertised capabilities. Routing then fetches each
-provider profile and scores candidates with the full `capability_scores` map.
+The DHT returns providers for advertised capabilities. Routing then opens a
+direct profile request to each provider and scores candidates with the full
+`capability_scores` map returned by the peer.
 
 ## Debugging
 
