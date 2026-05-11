@@ -2,18 +2,18 @@
 
 Trustworthy and Scalable Architectures for Decentralized AI Systems.
 
-Nodes advertise their capabilities through a libp2p Kademlia DHT, discover suitable peers, and forward queries to capable nodes. The default setup uses Ollama with Qwen3 1.7B, while dummy and direct Qwen backends are also available.
+Nodes advertise their capabilities through a libp2p Kademlia DHT, discover suitable peers, and forward queries to capable nodes. The default setup uses Ollama with Qwen3 1.7B; the optional local Hugging Face and AIaaS backends also default to Qwen3 1.7B, while the dummy backend is available for tests.
 
 ## Features
 
 - libp2p peer-to-peer networking
 - Kademlia DHT for profile and capability discovery
 - capability routing: general, math, programming, writing, summarization, research, planning, creative
-- Ollama-based capability classification at the entry node
+- LLM-based capability classification at the entry node
 - local peer registry with liveness tracking
 - ping-based health checks
 - optional GossipSub profile updates, disabled by default
-- dummy, Ollama, and direct Qwen agent backends
+- dummy, Ollama, local Hugging Face, and AIaaS agent backends
 - local network scripts and DHT inspection CLI
 
 ## Requirements
@@ -50,23 +50,66 @@ curl http://localhost:11434/api/tags
 
 ## Run a Local Network
 
-Start 5 nodes:
+Start the local network with the node count configured by `NUM_NODES` in `.env`:
 
 ```bash
-./scripts/start_network.sh 5
+./scripts/start_network.sh
 ```
 
-Later for bigger tests more nodes can be started (add OLLAMA_NUM_PREDICT=128 to get shorter model output results):
+Change `NUM_NODES` in `.env` when you need a smaller or larger network.
+
+## Configuration
+
+Create your local configuration by copying `.env.example` to `.env`:
 
 ```bash
-OLLAMA_NUM_PREDICT=128 ./scripts/start_network.sh 50
+cp .env.example .env
 ```
 
-The default Ollama model can be overridden:
+Then open `.env` and choose how you want to run the project by setting
+`REQUEST_BACKEND` and `CLASSIFIER_BACKEND` directly there:
 
-```bash
-OLLAMA_MODEL=qwen3:1.7b ./scripts/start_network.sh 8
+```text
+ollama  local Ollama server
+aiass   EPFL AIaaS API
+local   local Hugging Face model through transformers
+dummy   placeholder backend for tests
 ```
+
+If either backend is `aiass`, set `AIASS_API_KEY` in `.env`. The request model
+and classifier model can be configured separately for Ollama, local
+Transformers, and AIaaS. Change the other fields only if you want different
+ports, output lengths, or timeouts. The scripts and Python CLIs load `.env`
+automatically.
+
+For local development, the default ports in `.env.example` mean:
+
+```text
+BASE_PORT=8002       node 0 listens on libp2p port 8002, node 1 on 8003, etc.
+API_BASE_PORT=9002   node 0 exposes HTTP on 9002, node 1 on 9003, etc.
+API_HOST=127.0.0.1   node HTTP APIs are reachable only from this machine
+WEB_HOST=127.0.0.1   the web UI is reachable only from this machine
+WEB_PORT=8000        open the web UI at http://127.0.0.1:8000
+```
+
+Forwarding uses two peer timeouts: `QUERY_CONNECT_TIMEOUT` controls opening the
+libp2p stream, and `QUERY_TIMEOUT` controls how long the router waits for a
+selected node to generate its response. The UI and one-shot client use
+`CLIENT_QUERY_TIMEOUT`; it should always be larger than the worst expected
+network request.
+
+With the values in `.env.example`, one classification plus two forwarding
+attempts gives:
+
+```text
+CLASSIFIER_TIMEOUT + 2 * (QUERY_CONNECT_TIMEOUT + QUERY_TIMEOUT)
+= 60 + 2 * (2 + 60)
+= 184 seconds
+```
+
+So `CLIENT_QUERY_TIMEOUT=300` gives enough room for classification, one failed
+or slow routed node, one reroute, and some overhead without making the UI wait
+forever.
 
 Runtime files are written to:
 
@@ -79,7 +122,8 @@ Runtime files are written to:
 ```
 
 For local networks started by the script, each node also exposes a small HTTP
-query API. The libp2p ports start at `8002`; the HTTP API ports start at `9002`.
+query API. The libp2p ports start at `BASE_PORT`; the HTTP API ports start at
+`API_BASE_PORT`.
 The node state file uses this format:
 
 ```text
@@ -89,7 +133,8 @@ index libp2p_port capability model multiaddr api_url
 The web app calls:
 
 ```text
-POST http://127.0.0.1:<api-port>/api/query
+POST http://<API_HOST>:<api-port>/api/query
+GET  http://<API_HOST>:<api-port>/api/query/progress/<query_id>
 ```
 
 Stop the network:
@@ -127,20 +172,23 @@ python -m src.ui.web_app
 Then open:
 
 ```text
-http://127.0.0.1:8000
+http://<WEB_HOST>:<WEB_PORT>
 ```
 
 The web UI reads bootstrap entry nodes from `.runtime/web/config/bootstrap_nodes.txt`,
 lets you select one, and sends chat prompts through that node HTTP API.
 Conversations are saved locally in
 `.runtime/web/conversations.json`; the network still receives bounded context for
-the active conversation instead of the full chat history. The web UI renders common
-Markdown elements such as headings, lists, inline code, and code blocks.
+the active conversation instead of the full chat history. While a request is
+running, the web UI polls the gateway, which relays live progress events exposed
+by the selected node API. The full routing trace is still shown when the response
+arrives. The web UI renders common Markdown elements such as headings, lists,
+inline code, and code blocks.
 
 Web bootstrap file format:
 
 ```text
-http://127.0.0.1:9002
+http://<API_HOST>:<API_BASE_PORT>
 ```
 
 The local network script writes the first node API URL there for convenience.
@@ -161,6 +209,10 @@ Send a programming query:
 ```
 
 The entry node classifies the query capability, then may answer locally or forward the query to a better capability match.
+
+Nodes publish two capability-related fields in their DHT profile:
+`advertised_capabilities` are the strong capabilities indexed in the DHT, while
+`capability_scores` is the full score profile used after a candidate is fetched.
 
 Useful capability test prompts:
 
@@ -193,8 +245,10 @@ python -m src.cli.find_nodes \
 
 ## Manual Node Options
 
-Run one node manually with Ollama:
+Run one node manually:
 (`--bootstrap "<node-0-address>"` can be omitted if it's the first node that you run)
+
+The backend, models, timeouts, and address mode come from `.env`.
 
 ```bash
 python -m src.cli.run_node \
@@ -205,15 +259,7 @@ python -m src.cli.run_node \
   --capabilities math \
   --dht-mode server \
   --bootstrap "<node-0-address>" \
-  --advertise-address-mode ipv6_loopback \
-  --agent-backend ollama \
-  --ollama-model qwen3:1.7b \
-  --ollama-host http://localhost:11434 \
-  --ollama-timeout 300 \
-  --classifier-timeout 60 \
-  --query-timeout 330 \
-  --ollama-num-predict 512 \
-  --ollama-system-prompt "You are a concise mathematics specialist."
+  --system-prompt "You are a concise mathematics specialist."
 ```
 
 Enable GossipSub manually:
@@ -228,14 +274,20 @@ Available agent backends:
 ```text
 dummy
 ollama
-qwen
+local
+aiass
 ```
 
 ## Routing Summary
 
-For each query, the entry node classifies the required capability with Ollama, stores it in the query context, queries the DHT for providers, caches candidates locally, checks liveness, and forwards to a suitable peer. Forwarded nodes reuse the capability from the query context instead of classifying again.
+For each query, the entry node classifies the required capability with
+`CLASSIFIER_BACKEND`, stores it in the query context, queries the DHT for
+providers, caches candidates locally, checks liveness, and forwards to a
+suitable peer. The selected node answers with `REQUEST_BACKEND`. Forwarded nodes
+reuse the capability from the query context instead of classifying again.
 
-The DHT returns candidate providers, not necessarily every matching node.
+The DHT returns providers for advertised capabilities. Routing then fetches each
+provider profile and scores candidates with the full `capability_scores` map.
 
 ## Debugging
 
