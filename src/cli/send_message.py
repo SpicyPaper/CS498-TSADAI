@@ -15,6 +15,7 @@ import trio
 
 from src.network_utils import connect_to_peer
 from src.node import Node
+from src.env_config import env_float, load_project_env
 
 
 async def async_main(args):
@@ -52,6 +53,14 @@ async def async_main(args):
 
 
 def main():
+    try:
+        load_project_env()
+        ping_timeout = env_float("PING_TIMEOUT")
+        query_timeout = env_float("QUERY_TIMEOUT")
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr, flush=True)
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(
         description="Send one ping or one query to a node."
     )
@@ -65,17 +74,12 @@ def main():
     parser.add_argument(
         "--prompt", type=str, default="Hello node", help="Prompt for query mode"
     )
-    parser.add_argument("--timeout", type=float, default=5.0, help="Request timeout")
-    parser.add_argument(
-        "--query-timeout",
-        type=float,
-        default=60.0,
-        help="Query response timeout in seconds for query mode",
-    )
     parser.add_argument(
         "-s", "--seed", type=int, default=None, help="Optional deterministic seed"
     )
     args = parser.parse_args()
+    args.timeout = ping_timeout
+    args.query_timeout = query_timeout
 
     try:
         trio.run(async_main, args)

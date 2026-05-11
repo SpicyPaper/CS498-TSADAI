@@ -22,14 +22,44 @@ score_from_seed() {
   }'
 }
 
-NUM_NODES="${1:-5}"
+require_env() {
+  local name="$1"
+  if [ -z "${!name:-}" ]; then
+    echo "ERROR: missing $name in .env"
+    exit 1
+  fi
+}
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ ! -f "$ROOT_DIR/.env" ]; then
+  echo "ERROR: missing .env file at $ROOT_DIR/.env"
+  echo "Create it before starting the network."
+  exit 1
+fi
+
+set -a
+# shellcheck disable=SC1091
+. "$ROOT_DIR/.env"
+set +a
+
+require_env BASE_PORT
+require_env API_BASE_PORT
+require_env API_HOST
+require_env ADVERTISE_ADDRESS_MODE
+require_env REQUEST_BACKEND
+require_env CLASSIFIER_BACKEND
+require_env CLASSIFIER_TIMEOUT
+require_env QUERY_TIMEOUT
+require_env QUERY_CONNECT_TIMEOUT
+
+NUM_NODES="${1:-${NUM_NODES:-}}"
 
 if ! [[ "$NUM_NODES" =~ ^[0-9]+$ ]] || [ "$NUM_NODES" -lt 1 ]; then
   echo "Usage: $0 <num_nodes>=1.."
   exit 1
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME_DIR="$ROOT_DIR/.runtime"
 NODES_RUNTIME_DIR="$RUNTIME_DIR/nodes"
 WEB_RUNTIME_DIR="$RUNTIME_DIR/web"
@@ -64,35 +94,94 @@ CAPS_POOL=(
 )
 
 
-BASE_PORT=8002
-API_BASE_PORT=9002
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:1.7b}"
-OLLAMA_HOST="${OLLAMA_HOST:-http://localhost:11434}"
-
-echo "Checking Ollama backend..."
-if ! command -v curl >/dev/null 2>&1; then
-  echo "ERROR: curl is required to check the Ollama API before starting nodes."
+if [ "$REQUEST_BACKEND" != "dummy" ] && [ "$REQUEST_BACKEND" != "ollama" ] && [ "$REQUEST_BACKEND" != "local" ] && [ "$REQUEST_BACKEND" != "aiass" ]; then
+  echo "ERROR: REQUEST_BACKEND must be one of: dummy, ollama, local, aiass."
   exit 1
 fi
 
-if ! curl -fsS "${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
-  echo "ERROR: Ollama API is not reachable at ${OLLAMA_HOST}."
-  echo "Start it with:"
-  echo "  ollama serve"
-  echo "Or open the Ollama desktop app, then rerun this script."
+if [ "$CLASSIFIER_BACKEND" != "dummy" ] && [ "$CLASSIFIER_BACKEND" != "ollama" ] && [ "$CLASSIFIER_BACKEND" != "local" ] && [ "$CLASSIFIER_BACKEND" != "aiass" ]; then
+  echo "ERROR: CLASSIFIER_BACKEND must be one of: dummy, ollama, local, aiass."
   exit 1
 fi
 
-if ! curl -fsS "${OLLAMA_HOST}/api/tags" \
-  | python -c "import json,sys; data=json.load(sys.stdin); names={m.get('name') for m in data.get('models', [])}; sys.exit(0 if '${OLLAMA_MODEL}' in names else 1)" \
-  >/dev/null 2>&1; then
-  echo "ERROR: Ollama is running, but model '${OLLAMA_MODEL}' is not installed."
-  echo "Install it with:"
-  echo "  ollama pull ${OLLAMA_MODEL}"
-  exit 1
+if [ "$REQUEST_BACKEND" = "ollama" ] || [ "$CLASSIFIER_BACKEND" = "ollama" ]; then
+  require_env OLLAMA_MODEL
+  require_env OLLAMA_CLASSIFIER_MODEL
+  require_env OLLAMA_HOST
+  require_env OLLAMA_TIMEOUT
+  require_env OLLAMA_NUM_PREDICT
+  require_env OLLAMA_CHECK_TIMEOUT
+
+  echo "Checking Ollama backend..."
+  if ! command -v curl >/dev/null 2>&1; then
+    echo "ERROR: curl is required to check the Ollama API before starting nodes."
+    exit 1
+  fi
+
+  if ! curl -fsS "${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
+    echo "ERROR: Ollama API is not reachable at ${OLLAMA_HOST}."
+    echo "Start it with:"
+    echo "  ollama serve"
+    echo "Or open the Ollama desktop app, then rerun this script."
+    exit 1
+  fi
+
+  OLLAMA_MODELS_TO_CHECK=()
+  if [ "$REQUEST_BACKEND" = "ollama" ]; then
+    OLLAMA_MODELS_TO_CHECK+=("$OLLAMA_MODEL")
+  fi
+  if [ "$CLASSIFIER_BACKEND" = "ollama" ]; then
+    OLLAMA_MODELS_TO_CHECK+=("$OLLAMA_CLASSIFIER_MODEL")
+  fi
+
+  for MODEL_TO_CHECK in "${OLLAMA_MODELS_TO_CHECK[@]}"; do
+    if ! curl -fsS "${OLLAMA_HOST}/api/tags" \
+      | python -c "import json,sys; data=json.load(sys.stdin); names={m.get('name') for m in data.get('models', [])}; sys.exit(0 if '${MODEL_TO_CHECK}' in names else 1)" \
+      >/dev/null 2>&1; then
+      echo "ERROR: Ollama is running, but model '${MODEL_TO_CHECK}' is not installed."
+      echo "Install it with:"
+      echo "  ollama pull ${MODEL_TO_CHECK}"
+      exit 1
+    fi
+  done
+
+  echo "Ollama ready: ${OLLAMA_HOST} request_model=${OLLAMA_MODEL} classifier_model=${OLLAMA_CLASSIFIER_MODEL}"
 fi
 
-echo "Ollama ready: ${OLLAMA_HOST} model=${OLLAMA_MODEL}"
+if [ "$REQUEST_BACKEND" = "aiass" ] || [ "$CLASSIFIER_BACKEND" = "aiass" ]; then
+  require_env AIASS_API_KEY
+  require_env AIASS_BASE_URL
+  require_env AIASS_MODEL
+  require_env AIASS_CLASSIFIER_MODEL
+  require_env AIASS_TIMEOUT
+  require_env AIASS_MAX_TOKENS
+
+  if [ "$AIASS_API_KEY" = "YOUR_AIASS_API_KEY_HERE" ]; then
+    echo "ERROR: AIASS_API_KEY still has the placeholder value."
+    echo "Set your real AIaaS key in .env before using the AIaaS backend."
+    exit 1
+  fi
+
+  if [ "$REQUEST_BACKEND" = "aiass" ] && awk -v aiass="$AIASS_TIMEOUT" -v query="$QUERY_TIMEOUT" 'BEGIN { exit !(aiass >= query) }'; then
+    echo "WARNING: AIASS_TIMEOUT (${AIASS_TIMEOUT}s) is >= QUERY_TIMEOUT (${QUERY_TIMEOUT}s)."
+    echo "The entry node may stop waiting before the selected AIaaS node finishes."
+  fi
+
+  echo "AIaaS configured: ${AIASS_BASE_URL} request_model=${AIASS_MODEL} classifier_model=${AIASS_CLASSIFIER_MODEL}"
+fi
+
+if [ "$REQUEST_BACKEND" = "local" ] || [ "$CLASSIFIER_BACKEND" = "local" ]; then
+  require_env LOCAL_MODEL_ID
+  require_env LOCAL_CLASSIFIER_MODEL_ID
+  require_env LOCAL_MAX_NEW_TOKENS
+  require_env LOCAL_ENABLE_THINKING
+  require_env LOCAL_TIMEOUT
+
+  echo "Local Transformers configured: request_model=${LOCAL_MODEL_ID} classifier_model=${LOCAL_CLASSIFIER_MODEL_ID}"
+fi
+
+echo "Request backend: ${REQUEST_BACKEND}"
+echo "Classifier backend: ${CLASSIFIER_BACKEND}"
 echo
 
 echo "Starting $NUM_NODES nodes..."
@@ -118,16 +207,7 @@ python -m src.cli.run_node \
   --capabilities "$CAP0" \
   --capability-scores "$CAPABILITY_SCORES0" \
   --model-name "$MODEL0" \
-  --advertise-address-mode ipv6_loopback \
-  --agent-backend ollama \
-  --ollama-model "$OLLAMA_MODEL" \
-  --ollama-host "$OLLAMA_HOST" \
-  --ollama-timeout "${OLLAMA_TIMEOUT:-300}" \
-  --ollama-num-predict "${OLLAMA_NUM_PREDICT:-512}" \
-  --ollama-system-prompt "$SYSTEM_PROMPT0" \
-  --classifier-timeout "${CLASSIFIER_TIMEOUT:-60}" \
-  --query-timeout "${QUERY_TIMEOUT:-60}" \
-  --query-connect-timeout "${QUERY_CONNECT_TIMEOUT:-3}" \
+  --system-prompt "$SYSTEM_PROMPT0" \
   > "$LOG0" 2>&1 &
 
 PID0=$!
@@ -151,13 +231,13 @@ if [ -z "$ENTRY_PEER_ID" ]; then
 fi
 
 ENTRY_ADDR="/ip6/::1/tcp/${PORT0}/p2p/${ENTRY_PEER_ID}"
-echo "0 $PORT0 $CAP0 $MODEL0 $ENTRY_ADDR http://127.0.0.1:${API_PORT0}" >> "$NETWORK_FILE"
-echo "http://127.0.0.1:${API_PORT0}" > "$WEB_BOOTSTRAP_FILE"
+echo "0 $PORT0 $CAP0 $MODEL0 $ENTRY_ADDR http://${API_HOST}:${API_PORT0}" >> "$NETWORK_FILE"
+echo "http://${API_HOST}:${API_PORT0}" > "$WEB_BOOTSTRAP_FILE"
 
 echo "Bootstrap node address:"
 echo "  $ENTRY_ADDR"
 echo "Bootstrap node API:"
-echo "  http://127.0.0.1:${API_PORT0}/api/query"
+echo "  http://${API_HOST}:${API_PORT0}/api/query"
 echo
 
 # Start remaining nodes.
@@ -221,16 +301,7 @@ for ((i=1; i<NUM_NODES; i++)); do
     --capability-scores "$CAPABILITY_SCORES" \
     --model-name "$MODEL" \
     --bootstrap "$ENTRY_ADDR" \
-    --advertise-address-mode ipv6_loopback \
-    --agent-backend ollama \
-    --ollama-model "$OLLAMA_MODEL" \
-    --ollama-host "$OLLAMA_HOST" \
-    --ollama-timeout "${OLLAMA_TIMEOUT:-300}" \
-    --ollama-num-predict "${OLLAMA_NUM_PREDICT:-512}" \
-    --ollama-system-prompt "$SYSTEM_PROMPT" \
-    --classifier-timeout "${CLASSIFIER_TIMEOUT:-60}" \
-    --query-timeout "${QUERY_TIMEOUT:-60}" \
-    --query-connect-timeout "${QUERY_CONNECT_TIMEOUT:-3}" \
+    --system-prompt "$SYSTEM_PROMPT" \
     > "$LOG_FILE" 2>&1 &
 
   PID=$!
@@ -254,7 +325,7 @@ for ((i=1; i<NUM_NODES; i++)); do
     ADDR="/ip6/::1/tcp/${PORT}/p2p/${PEER_ID}"
   fi
 
-  echo "$i $PORT $CAP $MODEL $ADDR http://127.0.0.1:${API_PORT}" >> "$NETWORK_FILE"
+  echo "$i $PORT $CAP $MODEL $ADDR http://${API_HOST}:${API_PORT}" >> "$NETWORK_FILE"
 done
 
 echo

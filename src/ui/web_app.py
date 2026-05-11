@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import argparse
+import sys
 import time
 import uuid
 from threading import Lock
@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from src.env_config import env_float, env_int, load_project_env, require_env
 from src.ui.web_state import (
     STATIC_DIR,
     build_network_prompt,
@@ -322,22 +323,19 @@ async def chat(request: ChatRequest):
 def main() -> None:
     global QUERY_TIMEOUT_S
 
-    parser = argparse.ArgumentParser(description="Run the TSADAI web gateway.")
-    parser.add_argument("--host", default="127.0.0.1", help="Web gateway host.")
-    parser.add_argument("--port", type=int, default=8000, help="Web gateway port.")
-    parser.add_argument(
-        "--query-timeout",
-        type=float,
-        default=150.0,
-        help="HTTP node API query timeout in seconds.",
-    )
-    args = parser.parse_args()
-    QUERY_TIMEOUT_S = args.query_timeout
+    try:
+        load_project_env()
+        QUERY_TIMEOUT_S = env_float("CLIENT_QUERY_TIMEOUT")
+        host = require_env("WEB_HOST")
+        port = env_int("WEB_PORT")
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr, flush=True)
+        sys.exit(1)
 
     uvicorn.run(
         app,
-        host=args.host,
-        port=args.port,
+        host=host,
+        port=port,
         reload=False,
     )
 

@@ -1,8 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OLLAMA_MODEL="${OLLAMA_MODEL:-qwen3:1.7b}"
-OLLAMA_HOST_URL="${OLLAMA_HOST_URL:-http://localhost:11434}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ ! -f "$ROOT_DIR/.env" ]; then
+  echo "ERROR: missing .env file at $ROOT_DIR/.env"
+  echo "Create it before preparing Ollama."
+  exit 1
+fi
+
+set -a
+# shellcheck disable=SC1091
+. "$ROOT_DIR/.env"
+set +a
+
+if [ -z "${OLLAMA_MODEL:-}" ]; then
+  echo "ERROR: missing OLLAMA_MODEL in .env"
+  exit 1
+fi
+
+if [ -z "${OLLAMA_HOST:-}" ]; then
+  echo "ERROR: missing OLLAMA_HOST in .env"
+  exit 1
+fi
+
+OLLAMA_HOST_URL="${OLLAMA_HOST_URL:-$OLLAMA_HOST}"
 
 echo "Checking Ollama..."
 

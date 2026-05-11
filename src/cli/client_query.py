@@ -32,6 +32,7 @@ from libp2p.crypto.secp256k1 import create_new_key_pair
 from src.network_utils import connect_to_peer
 from src.protocols import QUERY_PROTOCOL
 from src.transport import TransportService
+from src.env_config import env_float, load_project_env
 
 
 def make_temp_host(seed: int | None = None):
@@ -108,6 +109,13 @@ async def async_main(args):
 
 
 def main():
+    try:
+        load_project_env()
+        timeout = env_float("CLIENT_QUERY_TIMEOUT")
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr, flush=True)
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(
         description="Send one query to the network through one entry node."
     )
@@ -122,12 +130,6 @@ def main():
         help="Prompt to send",
     )
     parser.add_argument(
-        "--timeout",
-        type=float,
-        default=150.0,
-        help="Query timeout in seconds",
-    )
-    parser.add_argument(
         "-s",
         "--seed",
         type=int,
@@ -135,6 +137,7 @@ def main():
         help="Optional deterministic seed",
     )
     args = parser.parse_args()
+    args.timeout = timeout
 
     try:
         trio.run(async_main, args)

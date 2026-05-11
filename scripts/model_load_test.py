@@ -1,6 +1,11 @@
+from src.env_config import env_bool, env_int, load_project_env, require_env
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-model_id = "Qwen/Qwen3-0.6B"
+load_project_env()
+
+model_id = require_env("LOCAL_MODEL_ID")
+max_new_tokens = env_int("LOCAL_MAX_NEW_TOKENS")
+enable_thinking = env_bool("LOCAL_ENABLE_THINKING")
 
 tokenizer = AutoTokenizer.from_pretrained(model_id)
 model = AutoModelForCausalLM.from_pretrained(
@@ -15,14 +20,14 @@ text = tokenizer.apply_chat_template(
     messages,
     tokenize=False,
     add_generation_prompt=True,
-    enable_thinking=False,
+    enable_thinking=enable_thinking,
 )
 
 inputs = tokenizer([text], return_tensors="pt").to(model.device)
 
 outputs = model.generate(
     **inputs,
-    max_new_tokens=128,
+    max_new_tokens=max_new_tokens,
     do_sample=True,
     temperature=0.7,
     top_p=0.8,

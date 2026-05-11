@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -16,6 +15,13 @@ shift
 PROMPT="$*"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if [ ! -f "$ROOT_DIR/.env" ]; then
+  echo "ERROR: missing .env file at $ROOT_DIR/.env"
+  echo "Create it before querying the network."
+  exit 1
+fi
+
 NETWORK_FILE="$ROOT_DIR/.runtime/nodes/state/known_nodes.txt"
 
 if [ ! -f "$NETWORK_FILE" ]; then
@@ -38,5 +44,4 @@ fi
 
 python -m src.cli.client_query \
   --entry-node "$ENTRY_ADDR" \
-  --prompt "$PROMPT" \
-  --timeout "${CLIENT_QUERY_TIMEOUT:-150}"
+  --prompt "$PROMPT"

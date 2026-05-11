@@ -18,6 +18,7 @@ from libp2p.kad_dht.kad_dht import DHTMode
 
 from src.node import Node
 from src.network_utils import connect_to_bootstrap_peers
+from src.env_config import load_project_env, require_env
 
 
 async def async_main(args) -> None:
@@ -63,6 +64,15 @@ async def async_main(args) -> None:
 
 
 def main() -> None:
+    try:
+        load_project_env()
+        advertise_address_mode = require_env("ADVERTISE_ADDRESS_MODE")
+        if advertise_address_mode not in {"ipv6_loopback"}:
+            raise RuntimeError("ADVERTISE_ADDRESS_MODE must be one of: ipv6_loopback")
+    except RuntimeError as exc:
+        print(f"\nERROR: {exc}", file=sys.stderr, flush=True)
+        sys.exit(1)
+
     parser = argparse.ArgumentParser(
         description="Find nodes advertising a capability through the DHT."
     )
@@ -84,14 +94,9 @@ def main() -> None:
         default=0,
         help="Temporary local port for the debug host.",
     )
-    parser.add_argument(
-        "--advertise-address-mode",
-        choices=["ipv6_loopback"],
-        default="ipv6_loopback",
-        help="Address mode for the temporary debug host.",
-    )
 
     args = parser.parse_args()
+    args.advertise_address_mode = advertise_address_mode
 
     try:
         trio.run(async_main, args)
