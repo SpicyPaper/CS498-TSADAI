@@ -1,4 +1,5 @@
 import time
+from collections.abc import Callable
 
 from libp2p.abc import IHost
 from libp2p.peer.id import ID
@@ -93,7 +94,12 @@ class RoutingService:
                     f"addresses={profile.addresses}",
                 )
 
-    async def route_query(self, prompt: str, context: QueryContext) -> RoutingDecision:
+    async def route_query(
+        self,
+        prompt: str,
+        context: QueryContext,
+        progress_callback: Callable[[dict], None] | None = None,
+    ) -> RoutingDecision:
         """
         Routing rule:
         1. get the scored capability needs from the query or forwarded context
@@ -104,15 +110,28 @@ class RoutingService:
         6. if no candidate exists, retry with the general capability
         7. otherwise return no_suitable_node
         """
+        def emit(event: str, message: str, **data) -> None:
+            if progress_callback is not None:
+                progress_callback({"event": event, "message": message, **data})
+
         # Resolve scored capabilities once and carry them through forwarding.
         if context.required_capabilities is None:
             if self.capability_classifier is None:
                 raise RuntimeError("Routing requires a capability classifier")
 
+            emit(
+                "classification_started",
+                "The entry node is classifying what capabilities the request needs.",
+            )
             required_capabilities = await self.capability_classifier.classify_scores(
                 prompt
             )
             context.required_capabilities = required_capabilities
+            emit(
+                "classification_completed",
+                "The entry node classified the required capabilities.",
+                required_capabilities=required_capabilities,
+            )
             log(
                 "ROUTING",
                 f"LLM classified query capability_scores={required_capabilities}",
@@ -122,6 +141,11 @@ class RoutingService:
                 context.required_capabilities
             )
             context.required_capabilities = required_capabilities
+            emit(
+                "classification_reused",
+                "The required capabilities were already known, so classification was skipped.",
+                required_capabilities=required_capabilities,
+            )
 
         excluded = set(context.excluded_peer_ids)
         excluded.add(self.local_profile.peer_id)
@@ -129,6 +153,7 @@ class RoutingService:
         candidate, trace = await self._search_scored_capabilities(
             required_capabilities,
             excluded,
+            progress_callback,
         )
         selected_capabilities = required_capabilities
 
@@ -142,6 +167,7 @@ class RoutingService:
             general_candidate, general_trace = await self._search_scored_capabilities(
                 {"general": 0.5},
                 excluded,
+                progress_callback,
             )
             general_trace["previous_attempt"] = initial_trace
             trace = general_trace
@@ -248,6 +274,7 @@ class RoutingService:
         self,
         capability_scores: dict[str, float],
         excluded_peer_ids: set[str],
+        progress_callback: Callable[[dict], None] | None = None,
     ) -> tuple[tuple[str, NodeProfile | None, float, float, str, dict] | None, dict]:
         """
         Refresh DHT candidates for important requested capabilities, then choose
@@ -276,10 +303,20 @@ class RoutingService:
         def elapsed_ms(started_at: float) -> float:
             return round((time.perf_counter() - started_at) * 1000, 1)
 
+        def emit(event: str, message: str, **data) -> None:
+            if progress_callback is not None:
+                progress_callback({"event": event, "message": message, **data})
+
         def finish_trace() -> None:
             trace["routing_duration_ms"] = elapsed_ms(routing_started_at)
 
         direct_started_at = time.perf_counter()
+        emit(
+            "dht_lookup_started",
+            "The entry node is asking the DHT for direct candidates.",
+            required_capabilities=capability_scores,
+            discovery_capabilities=discovery_capabilities,
+        )
         for capability in discovery_capabilities:
             await self.refresh_candidates_from_dht(capability)
 
@@ -332,6 +369,12 @@ class RoutingService:
                 ],
             }
         )
+        emit(
+            "direct_candidates_evaluated",
+            "The entry node evaluated itself and the direct DHT candidates.",
+            candidate_count=len(direct_candidates),
+            duration_ms=direct_duration_ms,
+        )
         best_direct = self._best_candidate(direct_candidates)
 
         if best_direct is not None and best_direct[2] >= MIN_ROUTING_SCORE_THRESHOLD:
@@ -347,6 +390,12 @@ class RoutingService:
                 f"threshold={MIN_ROUTING_SCORE_THRESHOLD:.2f}",
             )
             finish_trace()
+            emit(
+                "routing_candidate_selected",
+                "A direct candidate met the routing threshold.",
+                routing_score=best_direct[2],
+                threshold=MIN_ROUTING_SCORE_THRESHOLD,
+            )
             return self._candidate_from_evaluation(best_direct), trace
 
         if best_direct is None:
@@ -360,6 +409,10 @@ class RoutingService:
             )
 
         recommendation_started_at = time.perf_counter()
+        emit(
+            "recommendations_started",
+            "No direct candidate was strong enough, so the entry node is asking peers for recommendations.",
+        )
         recommended_remote_candidates = await self._get_recommended_candidates(
             direct_remote_candidates,
             capability_scores,
@@ -398,6 +451,13 @@ class RoutingService:
             "ROUTING",
             f"Recommendation candidate count={len(recommended_remote_candidates)}",
         )
+        emit(
+            "recommendations_completed",
+            "The recommendation step completed.",
+            candidate_count=len(recommended_remote_candidates),
+            request_count=recommendation_request_count,
+            status=trace["recommendation_status"],
+        )
 
         recommended_evaluation_started_at = time.perf_counter()
         recommended_candidates = await self._evaluate_candidate_pool(
@@ -418,6 +478,12 @@ class RoutingService:
                 "candidates": [candidate[-1] for candidate in recommended_candidates],
             }
         )
+        emit(
+            "recommended_candidates_evaluated",
+            "The entry node evaluated the recommended candidates.",
+            candidate_count=len(recommended_candidates),
+            duration_ms=recommended_evaluation_duration_ms,
+        )
         best_recommended = self._best_candidate(recommended_candidates)
 
         if (
@@ -431,6 +497,12 @@ class RoutingService:
                 f"threshold={MIN_ROUTING_SCORE_THRESHOLD:.2f}",
             )
             finish_trace()
+            emit(
+                "routing_candidate_selected",
+                "A recommended candidate met the routing threshold.",
+                routing_score=best_recommended[2],
+                threshold=MIN_ROUTING_SCORE_THRESHOLD,
+            )
             return self._candidate_from_evaluation(best_recommended), trace
 
         best_seen = self._best_candidate(direct_candidates + recommended_candidates)
@@ -444,6 +516,13 @@ class RoutingService:
             )
 
         finish_trace()
+        if best_seen is not None:
+            emit(
+                "routing_candidate_selected",
+                "No candidate met the threshold, so the best evaluated candidate was selected.",
+                routing_score=best_seen[2],
+                threshold=MIN_ROUTING_SCORE_THRESHOLD,
+            )
         return (
             self._candidate_from_evaluation(best_seen) if best_seen is not None else None
         ), trace

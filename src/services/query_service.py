@@ -147,6 +147,12 @@ class QueryService:
                 }
             )
 
+        def emit_routing_progress(event: dict) -> None:
+            event = dict(event)
+            event_name = str(event.pop("event", "routing_progress"))
+            message = str(event.pop("message", "Routing is still running."))
+            emit(event_name, message, **event)
+
         emit(
             "query_received",
             "The entry node received the query.",
@@ -243,7 +249,11 @@ class QueryService:
 
         try:
             emit("routing_started", "The entry node is evaluating network candidates.")
-            decision = await self.routing_service.route_query(prompt, routing_context)
+            decision = await self.routing_service.route_query(
+                prompt,
+                routing_context,
+                emit_routing_progress,
+            )
         except Exception as exc:
             log("SERVER", f"Routing failed: {exc}")
             emit("routing_failed", "Routing failed on the entry node.", error=str(exc))
@@ -453,6 +463,7 @@ class QueryService:
                         excluded_peer_ids=excluded_peer_ids,
                         required_capabilities=routing_context.required_capabilities,
                     ),
+                    emit_routing_progress,
                 )
 
                 if decision.no_suitable_node:
