@@ -11,7 +11,7 @@ from libp2p.utils.address_validation import (
     get_available_interfaces,
 )
 
-from src.local_agent import DummyAgent, QwenAgent, OllamaAgent
+from src.local_agent import AIAssAgent, DummyAgent, LocalTransformersAgent, OllamaAgent
 from src.network_utils import connect_to_bootstrap_peers
 from src.logging_utils import log
 from src.models import NodeProfile, QueryContext
@@ -24,7 +24,11 @@ from src.services.pubsub_service import PubSubService
 from src.services.query_service import QueryService
 from src.services.routing_service import RoutingService
 from src.services.recommendation_service import RecommendationService
-from src.services.capability_classifier import CAPABILITIES, CapabilityClassifier
+from src.services.capability_classifier import (
+    CAPABILITIES,
+    CLASSIFIER_SYSTEM_PROMPT,
+    CapabilityClassifier,
+)
 from src.transport import TransportService
 
 
@@ -75,7 +79,9 @@ class Node:
             if score >= ADVERTISED_CAPABILITY_MIN_SCORE
         ]
         advertised_capabilities = list(
-            dict.fromkeys([*explicit_capabilities, best_capability, *strong_capabilities])
+            dict.fromkeys(
+                [*explicit_capabilities, best_capability, *strong_capabilities]
+            )
         )
 
         return advertised_capabilities, scores
@@ -91,14 +97,26 @@ class Node:
         advertise_address_mode: str = "ipv6_loopback",
         enable_gossip: bool = False,
         agent_backend: str = "dummy",
-        llm_model_id: str = "Qwen/Qwen3-0.6B",
-        llm_max_new_tokens: int = 512,
-        llm_enable_thinking: bool = False,
+        classifier_backend: str = "dummy",
+        local_model_id: str = "Qwen/Qwen3-0.6B",
+        local_classifier_model_id: str | None = None,
+        local_max_new_tokens: int = 512,
+        local_enable_thinking: bool = False,
+        local_timeout: float = 40.0,
+        local_system_prompt: str | None = None,
         ollama_model: str = "qwen3:1.7b",
+        ollama_classifier_model: str | None = None,
         ollama_host: str = "http://localhost:11434",
         ollama_timeout: float = 300.0,
         ollama_num_predict: int = 512,
         ollama_system_prompt: str | None = None,
+        aiass_model: str = "Qwen/Qwen3-1.7B",
+        aiass_classifier_model: str | None = None,
+        aiass_base_url: str = "https://inference-rcp.epfl.ch/v1",
+        aiass_api_key: str = "",
+        aiass_timeout: float = 300.0,
+        aiass_max_tokens: int = 512,
+        aiass_system_prompt: str | None = None,
         classifier_timeout: float = 60.0,
         query_timeout: float = 60.0,
         query_connect_timeout: float = 3.0,
@@ -110,9 +128,18 @@ class Node:
 
         self.enable_gossip = enable_gossip
         self.agent_backend = agent_backend
+        self.classifier_backend = classifier_backend
+        self.local_model_id = local_model_id
+        self.local_classifier_model_id = local_classifier_model_id or local_model_id
         self.ollama_model = ollama_model
+        self.ollama_classifier_model = ollama_classifier_model or ollama_model
         self.ollama_host = ollama_host
         self.ollama_timeout = ollama_timeout
+        self.local_timeout = local_timeout
+        self.aiass_model = aiass_model
+        self.aiass_classifier_model = aiass_classifier_model or aiass_model
+        self.aiass_base_url = aiass_base_url
+        self.aiass_timeout = aiass_timeout
         self.classifier_timeout = classifier_timeout
         self.query_timeout = query_timeout
         self.query_connect_timeout = query_connect_timeout
@@ -156,11 +183,22 @@ class Node:
                 system_prompt=ollama_system_prompt,
                 num_predict=ollama_num_predict,
             )
-        elif agent_backend == "qwen":
-            self.local_agent = QwenAgent(
-                model_id=llm_model_id,
-                max_new_tokens=llm_max_new_tokens,
-                enable_thinking=llm_enable_thinking,
+        elif agent_backend == "aiass":
+            self.local_agent = AIAssAgent(
+                model=aiass_model,
+                base_url=aiass_base_url,
+                api_key=aiass_api_key,
+                timeout_s=aiass_timeout,
+                system_prompt=aiass_system_prompt,
+                max_tokens=aiass_max_tokens,
+            )
+        elif agent_backend == "local":
+            self.local_agent = LocalTransformersAgent(
+                model_id=local_model_id,
+                max_new_tokens=local_max_new_tokens,
+                system_prompt=local_system_prompt,
+                enable_thinking=local_enable_thinking,
+                timeout_s=local_timeout,
             )
         else:
             raise ValueError(f"Unsupported agent_backend: {agent_backend}")
@@ -183,11 +221,45 @@ class Node:
             self.dht_service,
         )
 
-        capability_classifier = CapabilityClassifier(
-            model=ollama_model,
-            host=ollama_host,
-            timeout_s=classifier_timeout,
-        )
+        if classifier_backend == "aiass":
+            classifier_agent = AIAssAgent(
+                model=self.aiass_classifier_model,
+                base_url=aiass_base_url,
+                api_key=aiass_api_key,
+                timeout_s=classifier_timeout,
+                system_prompt=CLASSIFIER_SYSTEM_PROMPT,
+                max_tokens=96,
+                temperature=0.0,
+            )
+            capability_classifier = CapabilityClassifier(agent=classifier_agent)
+        elif classifier_backend == "local":
+            local_answer_agent = (
+                self.local_agent
+                if agent_backend == "local"
+                and self.local_classifier_model_id == self.local_model_id
+                else None
+            )
+            classifier_agent = LocalTransformersAgent(
+                model_id=self.local_classifier_model_id,
+                max_new_tokens=96,
+                system_prompt=CLASSIFIER_SYSTEM_PROMPT,
+                enable_thinking=False,
+                timeout_s=classifier_timeout,
+                temperature=0.0,
+                tokenizer=getattr(local_answer_agent, "tokenizer", None),
+                model=getattr(local_answer_agent, "model", None),
+            )
+            capability_classifier = CapabilityClassifier(agent=classifier_agent)
+        elif classifier_backend == "dummy":
+            capability_classifier = CapabilityClassifier(agent=DummyAgent())
+        elif classifier_backend == "ollama":
+            capability_classifier = CapabilityClassifier(
+                model=self.ollama_classifier_model,
+                host=ollama_host,
+                timeout_s=classifier_timeout,
+            )
+        else:
+            raise ValueError(f"Unsupported classifier_backend: {classifier_backend}")
 
         self.routing_service = RoutingService(
             self.host,
@@ -293,17 +365,54 @@ class Node:
             f"DHT advertised capabilities: {self.local_profile.advertised_capabilities}",
         )
         log("NODE", f"Capability scores: {self.local_profile.capability_scores}")
-        log("NODE", f"Agent backend: {self.agent_backend}")
+        log("NODE", f"Request backend: {self.agent_backend}")
+        log("NODE", f"Classifier backend: {self.classifier_backend}")
         if self.agent_backend == "ollama":
             log(
                 "NODE",
                 f"Ollama answer backend model={self.ollama_model} "
                 f"host={self.ollama_host} timeout={self.ollama_timeout:.0f}s",
             )
+            classifier_description = (
+                f"ollama model={self.ollama_classifier_model} host={self.ollama_host}"
+            )
+        elif self.agent_backend == "aiass":
+            log(
+                "NODE",
+                f"AIaaS answer backend model={self.aiass_model} "
+                f"base_url={self.aiass_base_url} timeout={self.aiass_timeout:.0f}s",
+            )
+            classifier_description = (
+                f"aiass model={self.aiass_classifier_model} "
+                f"base_url={self.aiass_base_url}"
+            )
+        elif self.agent_backend == "local":
+            log(
+                "NODE",
+                f"Local Transformers answer backend model={self.local_model_id} "
+                f"timeout={self.local_timeout:.0f}s",
+            )
+            classifier_description = f"local model={self.local_classifier_model_id}"
+        else:
+            log("NODE", "Dummy answer backend")
+
+        if self.classifier_backend == "ollama":
+            classifier_description = (
+                f"ollama model={self.ollama_classifier_model} host={self.ollama_host}"
+            )
+        elif self.classifier_backend == "aiass":
+            classifier_description = (
+                f"aiass model={self.aiass_classifier_model} "
+                f"base_url={self.aiass_base_url}"
+            )
+        elif self.classifier_backend == "local":
+            classifier_description = f"local model={self.local_classifier_model_id}"
+        else:
+            classifier_description = "dummy"
         log(
             "ROUTING",
-            f"Capability classifier: ollama model={self.ollama_model} "
-            f"host={self.ollama_host} timeout={self.classifier_timeout:.0f}s "
+            f"Capability classifier: {classifier_description} "
+            f"timeout={self.classifier_timeout:.0f}s "
             f"allowed_capabilities={CAPABILITIES}",
         )
         log("NODE", f"Advertise address mode: {self.advertise_address_mode}")
