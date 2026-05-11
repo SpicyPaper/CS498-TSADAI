@@ -52,6 +52,7 @@ textarea {
 .sidebar-header {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   justify-content: space-between;
   gap: 10px;
 }
@@ -81,13 +82,18 @@ button.secondary {
   color: #374151;
 }
 
+.sidebar > button {
+  flex: 0 0 auto;
+}
+
 .conversation-list {
   display: flex;
-  flex: 1;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 6px;
   min-height: 0;
   overflow-y: auto;
+  padding-right: 2px;
 }
 
 .conversation-item {
@@ -95,6 +101,8 @@ button.secondary {
   border: 0;
   color: #111827;
   display: block;
+  flex: 0 0 auto;
+  min-height: 36px;
   overflow: hidden;
   padding: 9px 10px;
   text-align: left;
@@ -313,6 +321,7 @@ select {
 
 .routing-inspector {
   background: #f8fafc;
+  container-type: inline-size;
   color: #4b5563;
   display: none;
   flex-direction: column;
@@ -609,16 +618,52 @@ select {
 
 .trace-timing-list {
   display: grid;
-  gap: 6px;
+  gap: 7px;
 }
 
 .trace-timing-row {
+  align-items: start;
   background: #f9fafb;
   border: 1px solid #e5e7eb;
   border-radius: 6px;
   color: #374151;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(54px, max-content) minmax(0, 1fr);
   line-height: 1.4;
-  padding: 7px 8px;
+  min-width: 0;
+  padding: 8px;
+}
+
+.trace-timing-duration {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1.2;
+  padding: 3px 7px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.trace-timing-body {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.trace-timing-label {
+  color: #111827;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.trace-timing-meta {
+  color: #6b7280;
+  font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .composer {
@@ -662,5 +707,29 @@ textarea {
 
   .app-shell.inspector-open .inspector-resize {
     display: none;
+  }
+}
+
+@container (max-width: 340px) {
+  .trace-field {
+    grid-template-columns: 1fr;
+  }
+
+  .trace-timing-card {
+    margin-left: 10px;
+    margin-right: 10px;
+  }
+
+  .routing-trace {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .trace-timing-row {
+    grid-template-columns: 1fr;
+  }
+
+  .trace-timing-duration {
+    justify-self: start;
   }
 }

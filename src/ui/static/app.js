@@ -180,6 +180,14 @@ function formatDuration(ms) {
   return `${Math.round(ms / 1000)} s`;
 }
 
+function shortId(value) {
+  const text = String(value || "");
+  if (text.length <= 14) {
+    return text;
+  }
+  return `${text.slice(0, 6)}...${text.slice(-4)}`;
+}
+
 function stepDurationText(ms) {
   if (typeof ms !== "number" || !Number.isFinite(ms) || ms < 0) {
     return null;
@@ -215,19 +223,138 @@ function traceTotalDurationMs(trace = {}) {
   return (events[events.length - 1].ts - events[0].ts) * 1000;
 }
 
+function eventLabel(eventName) {
+  const labels = {
+    classification_completed: "Classify capability needs",
+    classification_reused: "Reuse capability needs",
+    direct_candidates_evaluated: "Find and score direct candidates",
+    recommendations_completed: "Ask peers for recommendations",
+    recommended_candidates_evaluated: "Score recommended candidates",
+    no_suitable_node: "Confirm no suitable node",
+    forward_response_received: "Forward to selected peer",
+    forward_failed: "Forward to selected peer",
+    forwarding_exhausted: "Try forward candidates",
+    generation_completed: "Generate answer",
+    generation_failed: "Generate answer",
+  };
+  return labels[eventName] || null;
+}
+
+function timingEndEvent(startEvent, events, startIndex) {
+  const endEvents = {
+    query_received: [
+      "query_completed",
+      "generation_failed",
+      "routing_failed",
+      "no_suitable_node",
+      "forwarding_exhausted",
+    ],
+    classification_started: ["classification_completed"],
+    dht_lookup_started: ["direct_candidates_evaluated"],
+    recommendations_started: ["recommendations_completed"],
+    recommendations_completed: ["recommended_candidates_evaluated"],
+    forward_started: [
+      "forward_response_received",
+      "forward_failed",
+      "forwarding_exhausted",
+    ],
+    generation_started: ["generation_completed", "generation_failed"],
+  };
+  const names = endEvents[startEvent.event] || [];
+  return events
+    .slice(startIndex + 1)
+    .find((candidate) => names.includes(candidate.event) && candidate.ts >= startEvent.ts);
+}
+
+function timingRowMetadata(startEvent, endEvent) {
+  if (endEvent.event === "recommendations_completed") {
+    const statuses = {
+      used: "used",
+      skipped: "skipped",
+      no_requests: "none sent",
+      disabled: "disabled",
+    };
+    const status = statuses[endEvent.status] || "";
+    const requestCount =
+      typeof endEvent.request_count === "number" ? `${endEvent.request_count} req` : "";
+    return [requestCount, status].filter(Boolean).join(", ");
+  }
+  if (
+    endEvent.event === "direct_candidates_evaluated" ||
+    endEvent.event === "recommended_candidates_evaluated"
+  ) {
+    return typeof endEvent.candidate_count === "number"
+      ? `${endEvent.candidate_count} candidates`
+      : "";
+  }
+  if (endEvent.event === "forward_response_received" || endEvent.event === "forward_failed") {
+    return endEvent.target_peer_id ? `peer ${shortId(endEvent.target_peer_id)}` : "";
+  }
+  return "";
+}
+
+function measuredTimingRows(events) {
+  const rows = [];
+  const starts = new Set([
+    "classification_started",
+    "dht_lookup_started",
+    "recommendations_started",
+    "recommendations_completed",
+    "forward_started",
+    "generation_started",
+  ]);
+
+  for (const [index, event] of events.entries()) {
+    if (event.event === "classification_reused") {
+      rows.push({
+        label: eventLabel(event.event),
+        durationMs: 0,
+        elapsedMs: (event.ts - events[0].ts) * 1000,
+        meta: "already known",
+      });
+      continue;
+    }
+
+    if (!starts.has(event.event)) {
+      continue;
+    }
+
+    const endEvent = timingEndEvent(event, events, index);
+    const label = endEvent ? eventLabel(endEvent.event) : null;
+    if (!endEvent || !label) {
+      continue;
+    }
+
+    const durationMs = (endEvent.ts - event.ts) * 1000;
+    const isRecommendationWithoutWork =
+      endEvent.event === "recommendations_completed" &&
+      (!endEvent.request_count || endEvent.status === "no_requests" || endEvent.status === "disabled");
+
+    if (durationMs < 1 || isRecommendationWithoutWork) {
+      continue;
+    }
+
+    rows.push({
+      label,
+      durationMs,
+      elapsedMs: (endEvent.ts - events[0].ts) * 1000,
+      meta: timingRowMetadata(event, endEvent),
+    });
+  }
+
+  return rows;
+}
+
 function traceTimingSummary(trace = {}) {
   const events = traceProgressEvents(trace).filter((event) => typeof event.ts === "number");
   if (!events.length) {
     return null;
   }
 
+  const rows = measuredTimingRows(events);
   return {
     totalMs: events.length > 1 ? (events[events.length - 1].ts - events[0].ts) * 1000 : 0,
-    rows: events.map((event, index) => ({
-      message: event.message || event.event || "Network step",
-      elapsedMs: (event.ts - events[0].ts) * 1000,
-      durationMs: index === 0 ? 0 : (event.ts - events[index - 1].ts) * 1000,
-    })),
+    rows,
   };
 }
 
@@ -325,6 +452,43 @@ function makeDetails(title) {
   summary.textContent = title;
   details.appendChild(summary);
   return details;
+}
+
+function messagesScrollState() {
+  const distanceFromBottom =
+    els.messages.scrollHeight - els.messages.scrollTop - els.messages.clientHeight;
+  return {
+    top: els.messages.scrollTop,
+    nearBottom: distanceFromBottom < 80,
+  };
+}
+
+function restoreMessagesScroll(scrollState) {
+  if (scrollState.nearBottom) {
+    els.messages.scrollTop = els.messages.scrollHeight;
+  } else {
+    els.messages.scrollTop = scrollState.top;
+  }
+}
+
+function traceDetailOpenKeys() {
+  return new Set(
+    [...els.routingInspector.querySelectorAll(".trace-details")]
+      .map((details, index) => {
+        const title = details.querySelector("summary")?.textContent || "";
+        return details.open ? `${index}:${title}` : null;
+      })
+      .filter(Boolean)
+  );
+}
+
+function restoreTraceDetailOpenState(openKeys) {
+  for (const [index, details] of [
+    ...els.routingInspector.querySelectorAll(".trace-details"),
+  ].entries()) {
+    const title = details.querySelector("summary")?.textContent || "";
+    details.open = openKeys.has(`${index}:${title}`);
+  }
 }
 
 function nodeDisplayName(peer = {}) {
@@ -779,21 +943,40 @@ function makeTimingSummaryCard(trace) {
 
   const note = document.createElement("div");
   note.className = "trace-timing-note";
-  note.textContent =
-    "Measured after the entry node receives the request. Browser-to-gateway time is not included.";
+  note.textContent = "Measured inside the network request. Browser-to-gateway time is excluded.";
   section.appendChild(note);
 
-  const details = makeDetails("Show timing events");
-  const list = document.createElement("div");
-  list.className = "trace-timing-list";
-  for (const row of summary.rows) {
-    const item = document.createElement("div");
-    item.className = "trace-timing-row";
-    item.textContent = `${formatDuration(row.elapsedMs)} total / +${formatDuration(row.durationMs)} - ${row.message}`;
-    list.appendChild(item);
+  if (summary.rows.length) {
+    const details = makeDetails("Show measured phases");
+    const list = document.createElement("div");
+    list.className = "trace-timing-list";
+    for (const row of summary.rows) {
+      const item = document.createElement("div");
+      item.className = "trace-timing-row";
+      const duration = document.createElement("div");
+      duration.className = "trace-timing-duration";
+      duration.textContent = formatDuration(row.durationMs);
+
+      const body = document.createElement("div");
+      body.className = "trace-timing-body";
+      const label = document.createElement("div");
+      label.className = "trace-timing-label";
+      label.textContent = row.label;
+      body.appendChild(label);
+
+      if (row.meta) {
+        const meta = document.createElement("div");
+        meta.className = "trace-timing-meta";
+        meta.textContent = row.meta;
+        body.appendChild(meta);
+      }
+
+      item.append(duration, body);
+      list.appendChild(item);
+    }
+    details.appendChild(list);
+    section.appendChild(details);
   }
-  details.appendChild(list);
-  section.appendChild(details);
   return section;
 }
 
@@ -983,6 +1166,8 @@ function syncTraceButtons() {
 }
 
 function renderTraceInspector() {
+  const openDetailKeys = traceDetailOpenKeys();
+  const inspectorScrollTop = els.routingInspector.scrollTop;
   els.appShell.classList.toggle("inspector-open", state.inspectorOpen);
   setInspectorWidth(state.inspectorWidth);
   els.routingInspector.innerHTML = "";
@@ -1032,6 +1217,8 @@ function renderTraceInspector() {
     els.routingInspector.appendChild(timingCard);
   }
   els.routingInspector.appendChild(makeRoutingTrace(state.selectedTrace));
+  restoreTraceDetailOpenState(openDetailKeys);
+  els.routingInspector.scrollTop = inspectorScrollTop;
 }
 
 async function api(path, options = {}) {
@@ -1076,6 +1263,7 @@ function renderConversations() {
 }
 
 function renderMessages() {
+  const scrollState = messagesScrollState();
   els.messages.innerHTML = "";
   const messages = state.currentConversation?.messages || [];
   if (!messages.length) {
@@ -1114,8 +1302,8 @@ function renderMessages() {
         <div class="message-content">${markdownToHtml(message.content)}</div>
       `;
       if (role === "assistant" && message.routing_trace) {
-        const traceId = `${state.currentConversationId || "conversation"}-${message.created_at || index}`;
         const label = `Assistant message ${assistantIndex}`;
+        const traceId = `${state.currentConversationId || "conversation"}-assistant-${assistantIndex}`;
         traces.push({ id: traceId, trace: message.routing_trace, label });
         wrapper.appendChild(makeTraceButton(traceId, message.routing_trace, label));
       }
@@ -1131,15 +1319,17 @@ function renderMessages() {
     resetTraceSelection();
   }
 
-  els.messages.scrollTop = els.messages.scrollHeight;
+  restoreMessagesScroll(scrollState);
   renderTraceInspector();
   syncTraceButtons();
-  typesetMath();
+  typesetMath(scrollState);
 }
 
-function typesetMath() {
+function typesetMath(scrollState = messagesScrollState()) {
   if (window.MathJax?.typesetPromise) {
-    window.MathJax.typesetPromise([els.messages]).catch(() => {});
+    window.MathJax.typesetPromise([els.messages])
+      .then(() => restoreMessagesScroll(scrollState))
+      .catch(() => {});
   }
 }
 
