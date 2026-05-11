@@ -175,6 +175,10 @@ select {
   align-items: flex-start;
 }
 
+.message.error {
+  align-items: flex-start;
+}
+
 .message-role {
   color: #4b5563;
   font-size: 13px;
@@ -197,6 +201,16 @@ select {
 .message.assistant .message-content {
   background: #f3f4f6;
   color: #111827;
+}
+
+.message.error .message-role {
+  color: #b91c1c;
+}
+
+.message.error .message-content {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
 }
 
 .pending-content {

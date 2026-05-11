@@ -191,8 +191,18 @@ Web bootstrap file format:
 http://<API_HOST>:<API_BASE_PORT>
 ```
 
-The local network script writes the first node API URL there for convenience.
-DHT discovery remains internal to the existing routing path.
+Add one node HTTP API URL per line. Blank lines and lines starting with `#` are
+ignored. The web UI uses this list to populate the entry-node selector; after
+that, DHT discovery remains internal to the existing routing path.
+
+When the file is missing or empty, the local network script writes the first
+node API URL there for convenience. If the file already contains something, the
+script leaves it untouched so you can keep a custom list, for example:
+
+```text
+http://127.0.0.1:9002
+http://127.0.0.1:9005
+```
 
 ## Send Queries
 

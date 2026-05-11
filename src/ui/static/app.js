@@ -1281,7 +1281,7 @@ function renderMessages() {
 
   for (const [index, message] of messages.entries()) {
     const wrapper = document.createElement("article");
-    const role = message.role === "User" ? "user" : "assistant";
+    const role = message.error ? "error" : message.role === "User" ? "user" : "assistant";
     wrapper.className = `message ${role}`;
     if (role === "assistant") {
       assistantIndex += 1;
@@ -1298,7 +1298,7 @@ function renderMessages() {
       `;
     } else {
       wrapper.innerHTML = `
-        <div class="message-role">${role === "user" ? "You" : "TSADAI"}</div>
+        <div class="message-role">${role === "user" ? "You" : role === "error" ? "Error" : "TSADAI"}</div>
         <div class="message-content">${markdownToHtml(message.content)}</div>
       `;
       if (role === "assistant" && message.routing_trace) {
@@ -1477,6 +1477,8 @@ async function sendMessage(event) {
     if (pending) {
       pending.pending = false;
       pending.content = error.message;
+      pending.error = true;
+      pending.role = "Error";
     }
     renderMessages();
   } finally {

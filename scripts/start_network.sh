@@ -232,7 +232,12 @@ fi
 
 ENTRY_ADDR="/ip6/::1/tcp/${PORT0}/p2p/${ENTRY_PEER_ID}"
 echo "0 $PORT0 $CAP0 $MODEL0 $ENTRY_ADDR http://${API_HOST}:${API_PORT0}" >> "$NETWORK_FILE"
-echo "http://${API_HOST}:${API_PORT0}" > "$WEB_BOOTSTRAP_FILE"
+if [ ! -s "$WEB_BOOTSTRAP_FILE" ]; then
+  echo "http://${API_HOST}:${API_PORT0}" > "$WEB_BOOTSTRAP_FILE"
+  echo "Wrote web bootstrap node: $WEB_BOOTSTRAP_FILE"
+else
+  echo "Keeping existing web bootstrap nodes: $WEB_BOOTSTRAP_FILE"
+fi
 
 echo "Bootstrap node address:"
 echo "  $ENTRY_ADDR"
