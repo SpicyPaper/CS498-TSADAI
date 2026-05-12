@@ -168,7 +168,16 @@ if [ "$REQUEST_BACKEND" = "local" ] || [ "$CLASSIFIER_BACKEND" = "local" ]; then
   require_env LOCAL_TIMEOUT
 
   echo "Local Transformers configured: request_model=${LOCAL_MODEL_ID} classifier_model=${LOCAL_CLASSIFIER_MODEL_ID}"
+  echo "Preloading local Hugging Face model files before starting nodes..."
+  python -m scripts.preload_local_models
 fi
+
+if [ "$REQUEST_BACKEND" = "local" ] || [ "$CLASSIFIER_BACKEND" = "local" ]; then
+  NODE_STARTUP_WAIT_S="${NODE_STARTUP_WAIT_S:-300}"
+else
+  NODE_STARTUP_WAIT_S="${NODE_STARTUP_WAIT_S:-25}"
+fi
+NODE_STARTUP_WAIT_ATTEMPTS=$((NODE_STARTUP_WAIT_S * 2))
 
 echo "Request backend: ${REQUEST_BACKEND}"
 echo "Classifier backend: ${CLASSIFIER_BACKEND}"
@@ -201,10 +210,10 @@ PID0=$!
 echo "$PID0" >> "$PID_FILE"
 
 echo "Started node 0 (pid=$PID0, port=$PORT0, api=$API_PORT0, caps=$CAP0)"
-echo "Waiting for node 0 peer id..."
+echo "Waiting up to ${NODE_STARTUP_WAIT_S}s for node 0 peer id..."
 
 ENTRY_PEER_ID=""
-for _ in $(seq 1 50); do
+for _ in $(seq 1 "$NODE_STARTUP_WAIT_ATTEMPTS"); do
   if grep -q "^\[.*\] \[NODE\] I am " "$LOG0"; then
     ENTRY_PEER_ID="$(grep -m1 "^\[.*\] \[NODE\] I am " "$LOG0" | sed -E 's/.*I am ([^ ]+).*/\1/')"
     break
@@ -286,7 +295,7 @@ for ((i=1; i<NUM_NODES; i++)); do
   echo "Started node $i (pid=$PID, port=$PORT, api=$API_PORT, caps=$CAP)"
 
   PEER_ID=""
-  for _ in $(seq 1 50); do
+  for _ in $(seq 1 "$NODE_STARTUP_WAIT_ATTEMPTS"); do
     if grep -q "^\[.*\] \[NODE\] I am " "$LOG_FILE"; then
       PEER_ID="$(grep -m1 "^\[.*\] \[NODE\] I am " "$LOG_FILE" | sed -E 's/.*I am ([^ ]+).*/\1/')"
       break
