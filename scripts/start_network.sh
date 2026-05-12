@@ -21,6 +21,27 @@ require_env() {
   fi
 }
 
+ollama_model_installed() {
+  local model="$1"
+  curl -fsS "${OLLAMA_HOST}/api/tags" \
+    | MODEL_TO_CHECK="$model" python -c "import json,os,sys; data=json.load(sys.stdin); names={m.get('name') for m in data.get('models', [])}; sys.exit(0 if os.environ['MODEL_TO_CHECK'] in names else 1)" \
+    >/dev/null 2>&1
+}
+
+ollama_pull_model() {
+  local model="$1"
+  echo "Model '${model}' is missing. Pulling it with Ollama..."
+  local payload
+  payload="$(MODEL_TO_PULL="$model" python -c "import json,os; print(json.dumps({'name': os.environ['MODEL_TO_PULL'], 'stream': False}))")"
+  if ! curl -fsS "${OLLAMA_HOST}/api/pull" \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    | python -m json.tool; then
+    echo "ERROR: failed to pull Ollama model '${model}'."
+    exit 1
+  fi
+}
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [ ! -f "$ROOT_DIR/.env" ]; then
@@ -125,12 +146,12 @@ if [ "$REQUEST_BACKEND" = "ollama" ] || [ "$CLASSIFIER_BACKEND" = "ollama" ]; th
   fi
 
   for MODEL_TO_CHECK in "${OLLAMA_MODELS_TO_CHECK[@]}"; do
-    if ! curl -fsS "${OLLAMA_HOST}/api/tags" \
-      | python -c "import json,sys; data=json.load(sys.stdin); names={m.get('name') for m in data.get('models', [])}; sys.exit(0 if '${MODEL_TO_CHECK}' in names else 1)" \
-      >/dev/null 2>&1; then
-      echo "ERROR: Ollama is running, but model '${MODEL_TO_CHECK}' is not installed."
-      echo "Install it with:"
-      echo "  ollama pull ${MODEL_TO_CHECK}"
+    if ! ollama_model_installed "$MODEL_TO_CHECK"; then
+      ollama_pull_model "$MODEL_TO_CHECK"
+    fi
+
+    if ! ollama_model_installed "$MODEL_TO_CHECK"; then
+      echo "ERROR: Ollama model '${MODEL_TO_CHECK}' is still not installed after pull."
       exit 1
     fi
   done
