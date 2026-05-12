@@ -69,6 +69,30 @@ class QueryService:
             "capability_scores": profile.capability_scores,
         }
 
+    def _execution_prompt(
+        self,
+        prompt: str,
+        required_capabilities: dict[str, float] | None,
+    ) -> str:
+        if not required_capabilities:
+            return prompt
+        capabilities = ", ".join(
+            capability
+            for capability, score in sorted(
+                required_capabilities.items(),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            if score > 0.0
+        )
+        if not capabilities:
+            return prompt
+        return (
+            "Answer the user request below.\n"
+            f"Requested capabilities: {capabilities}\n\n"
+            f"User request:\n{prompt}"
+        )
+
     def _response_trace(
         self,
         query_id: str,
@@ -188,7 +212,9 @@ class QueryService:
                     "The selected node started generating the answer.",
                     node=self._node_summary(),
                 )
-                answer = await self.local_agent.generate(prompt)
+                answer = await self.local_agent.generate(
+                    self._execution_prompt(prompt, context.required_capabilities)
+                )
             except Exception as exc:
                 log("SERVER", f"Forwarded local generation failed: {exc}")
                 emit(
@@ -307,7 +333,9 @@ class QueryService:
                     "The entry node selected itself and started generating the answer.",
                     node=self._node_summary(),
                 )
-                answer = await self.local_agent.generate(prompt)
+                answer = await self.local_agent.generate(
+                    self._execution_prompt(prompt, routing_context.required_capabilities)
+                )
             except Exception as exc:
                 log("SERVER", f"Local generation failed: {exc}")
                 emit(
@@ -491,7 +519,12 @@ class QueryService:
                         "After retrying routing, the entry node selected itself and started generating the answer.",
                         node=self._node_summary(),
                     )
-                    answer = await self.local_agent.generate(prompt)
+                    answer = await self.local_agent.generate(
+                        self._execution_prompt(
+                            prompt,
+                            routing_context.required_capabilities,
+                        )
+                    )
                     routing_trace = self._response_trace(
                         query_id,
                         decision.routing_trace,

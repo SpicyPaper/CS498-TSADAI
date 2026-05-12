@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from pathlib import Path
@@ -14,7 +15,78 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 WEB_RUNTIME_DIR = ROOT_DIR / ".runtime" / "web"
 BOOTSTRAP_NODES_FILE = WEB_RUNTIME_DIR / "config" / "bootstrap_nodes.txt"
 CONVERSATIONS_FILE = WEB_RUNTIME_DIR / "conversations.json"
-MAX_CONTEXT_CHARS = 2400
+DEFAULT_MAX_CONTEXT_CHARS = 8000
+DEFAULT_CONTEXT_TOKENS = 2000
+DEFAULT_CONTEXT_CHARS_PER_TOKEN = 4
+
+
+def context_chars_per_token() -> int:
+    raw = os.environ.get(
+        "WEB_CONTEXT_CHARS_PER_TOKEN",
+        str(DEFAULT_CONTEXT_CHARS_PER_TOKEN),
+    )
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_CONTEXT_CHARS_PER_TOKEN
+    return max(1, value)
+
+
+def max_context_tokens() -> int:
+    raw = os.environ.get("WEB_CONTEXT_TOKENS")
+    if raw is None:
+        return max(1, (max_context_chars() + context_chars_per_token() - 1) // context_chars_per_token())
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_CONTEXT_TOKENS
+    return max(250, value)
+
+
+def max_context_chars() -> int:
+    token_limit = os.environ.get("WEB_CONTEXT_TOKENS")
+    if token_limit is not None:
+        return max_context_tokens() * context_chars_per_token()
+
+    raw = os.environ.get("WEB_MAX_CONTEXT_CHARS", str(DEFAULT_MAX_CONTEXT_CHARS))
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MAX_CONTEXT_CHARS
+    return max(1000, value)
+
+
+def make_context_info(
+    *,
+    included_messages: int,
+    available_messages: int,
+    history_chars: int,
+    total_chars: int,
+    chat_chars: int,
+    max_chars: int,
+    truncated: bool,
+) -> dict:
+    chars_per_token = context_chars_per_token()
+    approx_tokens = 0
+    if total_chars > 0:
+        approx_tokens = max(1, (total_chars + chars_per_token - 1) // chars_per_token)
+    chat_approx_tokens = 0
+    if chat_chars > 0:
+        chat_approx_tokens = max(1, (chat_chars + chars_per_token - 1) // chars_per_token)
+    max_tokens = max(1, (max_chars + chars_per_token - 1) // chars_per_token)
+    return {
+        "included_messages": included_messages,
+        "available_messages": available_messages,
+        "history_chars": history_chars,
+        "total_chars": total_chars,
+        "chat_chars": chat_chars,
+        "approx_tokens": approx_tokens,
+        "chat_approx_tokens": chat_approx_tokens,
+        "max_context_chars": max_chars,
+        "max_context_tokens": max_tokens,
+        "chars_per_token": chars_per_token,
+        "truncated": truncated,
+    }
 
 
 def port_from_api_url(api_url: str) -> str:
@@ -105,9 +177,20 @@ def ensure_conversation(
     return conversation
 
 
-def build_network_prompt(messages: list[dict], prompt: str) -> str:
+def build_network_context(messages: list[dict], prompt: str) -> tuple[str, dict]:
+    limit = max_context_chars()
+    prompt_chars = len(prompt)
+
     if not messages:
-        return prompt
+        return prompt, make_context_info(
+            included_messages=0,
+            available_messages=0,
+            history_chars=0,
+            total_chars=prompt_chars,
+            chat_chars=prompt_chars,
+            max_chars=limit,
+            truncated=False,
+        )
 
     header = (
         "You are answering one turn in an ongoing UI chat. "
@@ -115,23 +198,57 @@ def build_network_prompt(messages: list[dict], prompt: str) -> str:
         "Recent context:\n"
     )
     footer = f"\nCurrent user message:\n{prompt}"
-    budget = MAX_CONTEXT_CHARS - len(header) - len(footer)
+    remaining = limit - len(header) - len(footer)
 
     selected: list[str] = []
     used = 0
+    chat_used = 0
+    truncated = False
     for message in reversed(messages):
         role = str(message.get("role", "Assistant"))
         content = str(message.get("content", ""))
         block = f"{role}: {content}\n"
-        if used + len(block) > budget:
+        if used + len(block) > remaining:
+            space_left = remaining - used
+            prefix = f"{role}: "
+            suffix = "\n"
+            content_room = space_left - len(prefix) - len(suffix)
+            if content_room > 120 and not selected:
+                selected.insert(0, f"{prefix}{content[-content_room:]}{suffix}")
+                used += space_left
+                chat_used += content_room
+            truncated = True
             break
         selected.insert(0, block)
         used += len(block)
+        chat_used += len(content)
 
     if not selected:
-        return prompt
+        return prompt, make_context_info(
+            included_messages=0,
+            available_messages=len(messages),
+            history_chars=0,
+            total_chars=prompt_chars,
+            chat_chars=prompt_chars,
+            max_chars=limit,
+            truncated=True,
+        )
 
-    return header + "".join(selected) + footer
+    network_prompt = header + "".join(selected) + footer
+    return network_prompt, make_context_info(
+        included_messages=len(selected),
+        available_messages=len(messages),
+        history_chars=used,
+        total_chars=len(network_prompt),
+        chat_chars=chat_used + prompt_chars,
+        max_chars=limit,
+        truncated=truncated or len(selected) < len(messages),
+    )
+
+
+def build_network_prompt(messages: list[dict], prompt: str) -> str:
+    network_prompt, _ = build_network_context(messages, prompt)
+    return network_prompt
 
 
 def summarize_conversations(conversations: list[dict]) -> list[dict]:

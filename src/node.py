@@ -35,13 +35,12 @@ from src.services.capability_classifier import (
     CLASSIFIER_SYSTEM_PROMPT,
     CapabilityClassifier,
 )
+from src.services.capability_scorer import CapabilityScorer
 from src.transport import TransportService
 
 
 CAPABILITY_ADVERTISE_INTERVAL_S = 30 * 60.0
-ADVERTISED_CAPABILITY_MIN_SCORE = 0.70
-
-
+MAX_ADVERTISED_CAPABILITIES = 3
 class Node:
     """
     Center of logic.
@@ -59,8 +58,8 @@ class Node:
         """
         Return the DHT-advertised capabilities and the complete score profile.
 
-        The DHT should index only strong capabilities. The full score profile is
-        served directly through the profile protocol when a peer needs it.
+        The DHT indexes only the strongest capabilities. The full score profile
+        is served directly through the profile protocol when a peer needs it.
         """
         explicit_capabilities = advertised_capabilities or (
             [] if capability_scores else ["general"]
@@ -73,21 +72,20 @@ class Node:
             explicit_capabilities = ["general"]
             scores = {"general": 1.0}
 
-        best_capability = max(scores, key=scores.get)
-        strong_capabilities = [
+        ranked_capabilities = [
             capability
             for capability, score in sorted(
                 scores.items(),
                 key=lambda item: item[1],
                 reverse=True,
             )
-            if score >= ADVERTISED_CAPABILITY_MIN_SCORE
+            if score > 0.0
         ]
         advertised_capabilities = list(
             dict.fromkeys(
-                [*explicit_capabilities, best_capability, *strong_capabilities]
+                [*explicit_capabilities, *ranked_capabilities]
             )
-        )
+        )[:MAX_ADVERTISED_CAPABILITIES]
 
         return advertised_capabilities, scores
 
@@ -148,6 +146,7 @@ class Node:
         self.classifier_timeout = classifier_timeout
         self.query_timeout = query_timeout
         self.query_connect_timeout = query_connect_timeout
+        self._capability_scored = False
 
         # Seed is useful for tests
         if seed is not None:
@@ -271,6 +270,11 @@ class Node:
             )
         else:
             raise ValueError(f"Unsupported classifier_backend: {classifier_backend}")
+
+        self.capability_scorer = CapabilityScorer(
+            role_hint_capabilities=advertised_capabilities,
+            node_name=model_name,
+        )
 
         self.routing_service = RoutingService(
             self.host,
@@ -413,6 +417,13 @@ class Node:
             f"timeout={self.classifier_timeout:.0f}s "
             f"allowed_capabilities={CAPABILITIES}",
         )
+        log(
+            "SCORES",
+            "Capability scoring: simulated "
+            "one high score in [0.8, 1.0], "
+            "one medium score in [0.5, 0.75], "
+            "one low score in [0.1, 0.45]",
+        )
         log("NODE", f"Advertise address mode: {self.advertise_address_mode}")
         log("NODE", f"Peer query response timeout: {self.query_timeout:.0f}s")
         log("NODE", f"Peer query connect timeout: {self.query_connect_timeout:.0f}s")
@@ -477,6 +488,28 @@ class Node:
     async def publish_self_to_dht(self) -> None:
         await self.advertise_capabilities_to_dht()
 
+    async def score_capabilities_before_advertising(self) -> None:
+        if self._capability_scored:
+            return
+
+        log(
+            "SCORES",
+            "Generating simulated capability scores before advertising this node.",
+        )
+        scores = await self.capability_scorer.score_all()
+        advertised_capabilities, resolved_scores = self.resolve_profile_capabilities(
+            None,
+            scores,
+        )
+        self.local_profile.capability_scores = resolved_scores
+        self.local_profile.advertised_capabilities = advertised_capabilities
+        self._capability_scored = True
+        log(
+            "SCORES",
+            f"Updated node profile after simulated scoring "
+            f"dht_caps={advertised_capabilities} scores={resolved_scores}",
+        )
+
     async def announce_self_via_gossip(self) -> None:
         if self.pubsub_service is None:
             return
@@ -490,12 +523,14 @@ class Node:
         self,
         bootstrap_addrs: list[str],
     ) -> None:
+        log("NODE", f"I am {self.local_profile.peer_id}")
         bootstrap_peers = await connect_to_bootstrap_peers(
             self.host,
             bootstrap_addrs,
         )
         await self.dht_service.add_bootstrap_peers(bootstrap_peers)
 
+        await self.score_capabilities_before_advertising()
         await self.publish_self_to_dht()
 
         if self.enable_gossip:

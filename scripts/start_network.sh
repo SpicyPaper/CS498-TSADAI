@@ -13,15 +13,6 @@ set -euo pipefail
 #   .runtime/nodes/state/known_nodes.txt
 #   .runtime/nodes/logs/node_<i>.log
 
-score_from_seed() {
-  local seed="$1"
-  local offset="$2"
-  awk -v s="$seed" -v o="$offset" 'BEGIN {
-    srand(s + o)
-    printf "%.2f", rand()
-  }'
-}
-
 require_env() {
   local name="$1"
   if [ -z "${!name:-}" ]; then
@@ -83,7 +74,6 @@ fi
 
 # Capability pool.
 CAPS_POOL=(
-  "general"
   "math"
   "programming"
   "writing"
@@ -182,6 +172,7 @@ fi
 
 echo "Request backend: ${REQUEST_BACKEND}"
 echo "Classifier backend: ${CLASSIFIER_BACKEND}"
+echo "Capability scores: simulated"
 echo
 
 echo "Starting $NUM_NODES nodes..."
@@ -193,11 +184,8 @@ API_PORT0=$API_BASE_PORT
 SEED0=1000
 CAP0="general"
 MODEL0="node-0-entry"
-GENERAL0=$(score_from_seed "$SEED0" 1)
-GENERAL0=$(awk -v x="$GENERAL0" 'BEGIN { printf "%.2f", 0.45 + x * 0.25 }')
-CAPABILITY_SCORES0="{\"general\":${GENERAL0}}"
 
-SYSTEM_PROMPT0="You are a helpful general assistant. Answer clearly and concisely."
+SYSTEM_PROMPT0="You are a general-purpose AI node. Give clear, balanced answers across many topics. Stay concise and avoid expert-level detail unless the task is simple and well-known."
 
 LOG0="$LOG_DIR/node_0.log"
 python -m src.cli.run_node \
@@ -205,7 +193,6 @@ python -m src.cli.run_node \
   --api-port "$API_PORT0" \
   --seed "$SEED0" \
   --capabilities "$CAP0" \
-  --capability-scores "$CAPABILITY_SCORES0" \
   --model-name "$MODEL0" \
   --system-prompt "$SYSTEM_PROMPT0" \
   > "$LOG0" 2>&1 &
@@ -250,49 +237,34 @@ for ((i=1; i<NUM_NODES; i++)); do
   PORT=$((BASE_PORT + i))
   API_PORT=$((API_BASE_PORT + i))
   SEED=$((1000 + i))
-  CAP="${CAPS_POOL[$((i % ${#CAPS_POOL[@]}))]}"
-  MODEL="node-${i}-${CAP}"
+  PRIMARY_CAP="${CAPS_POOL[$(((i - 1) % ${#CAPS_POOL[@]}))]}"
+  CAP="$PRIMARY_CAP"
+  MODEL="node-${i}-${PRIMARY_CAP}"
 
-  MAIN_RAND=$(score_from_seed "$SEED" 1)
-  GENERAL_RAND=$(score_from_seed "$SEED" 2)
-  SECONDARY_RAND=$(score_from_seed "$SEED" 3)
-
-  MAIN_SCORE=$(awk -v x="$MAIN_RAND" 'BEGIN { printf "%.2f", 0.78 + x * 0.17 }')
-  GENERAL_SCORE=$(awk -v x="$GENERAL_RAND" 'BEGIN { printf "%.2f", 0.45 + x * 0.20 }')
-  SECONDARY_SCORE=$(awk -v x="$SECONDARY_RAND" 'BEGIN { printf "%.2f", 0.20 + x * 0.25 }')
-
-  case "$CAP" in
+  case "$PRIMARY_CAP" in
     math)
-      CAPABILITY_SCORES="{\"math\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"research\":${SECONDARY_SCORE}}"
-      SYSTEM_PROMPT="You are a concise mathematics specialist. Show the key reasoning steps and avoid unsupported claims."
+      SYSTEM_PROMPT="You are a specialized AI node. Specialty: mathematics. For mathematics tasks: give your best answer, show formulas and key steps, and verify results. For tasks outside mathematics: give a very basic answer, keep it brief, and do not use expert reasoning."
       ;;
     programming)
-      CAPABILITY_SCORES="{\"programming\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"research\":${SECONDARY_SCORE}}"
-      SYSTEM_PROMPT="You are a careful programming assistant. Prefer correct, minimal code and mention important assumptions."
+      SYSTEM_PROMPT="You are a specialized AI node. Specialty: programming. For programming tasks: write correct runnable code, handle edge cases, and explain bugs before fixing them. For tasks outside programming: give a very basic answer, keep it brief, and do not use expert reasoning."
       ;;
     writing)
-      CAPABILITY_SCORES="{\"writing\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"summarization\":${SECONDARY_SCORE}}"
-      SYSTEM_PROMPT="You are a writing specialist. Improve clarity, tone, structure, and correctness."
+      SYSTEM_PROMPT="You are a specialized AI node. Specialty: writing. For writing tasks: improve tone, clarity, structure, and wording while preserving intent. For tasks outside writing: give a very basic answer, keep it brief, and do not use expert reasoning."
       ;;
     summarization)
-      CAPABILITY_SCORES="{\"summarization\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"writing\":${SECONDARY_SCORE}}"
-      SYSTEM_PROMPT="You are a summarization specialist. Preserve key facts and remove unnecessary detail."
+      SYSTEM_PROMPT="You are a specialized AI node. Specialty: summarization. For summarization tasks: keep key facts, relationships, constraints, and caveats while removing unnecessary detail. For tasks outside summarization: give a very basic answer, keep it brief, and do not use expert reasoning."
       ;;
     research)
-      CAPABILITY_SCORES="{\"research\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"writing\":${SECONDARY_SCORE}}"
-      SYSTEM_PROMPT="You are a research assistant. Be factual, structured, and explicit about uncertainty."
+      SYSTEM_PROMPT="You are a specialized AI node. Specialty: research. For research tasks: check evidence, source quality, uncertainty, and alternatives. Separate facts from assumptions. For tasks outside research: give a very basic answer, keep it brief, and do not use expert reasoning."
       ;;
     planning)
-      CAPABILITY_SCORES="{\"planning\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"research\":${SECONDARY_SCORE}}"
-      SYSTEM_PROMPT="You are a planning specialist. Break goals into clear, practical steps."
+      SYSTEM_PROMPT="You are a specialized AI node. Specialty: planning. For planning tasks: give ordered realistic steps, dependencies, timing, checkpoints, and risks. For tasks outside planning: give a very basic answer, keep it brief, and do not use expert reasoning."
       ;;
     creative)
-      CAPABILITY_SCORES="{\"creative\":${MAIN_SCORE},\"general\":${GENERAL_SCORE},\"writing\":${SECONDARY_SCORE}}"
-      SYSTEM_PROMPT="You are a creative assistant. Generate vivid, original, coherent ideas."
+      SYSTEM_PROMPT="You are a specialized AI node. Specialty: creative ideation. For creative tasks: give original, vivid, coherent ideas that respect the constraints. Avoid generic ideas. For tasks outside creative ideation: give a very basic answer, keep it brief, and do not use expert reasoning."
       ;;
     *)
-      CAPABILITY_SCORES="{\"general\":${GENERAL_SCORE}}"
-      SYSTEM_PROMPT="You are a helpful general assistant. Answer clearly and concisely."
+      SYSTEM_PROMPT="You are a general-purpose AI node. Give clear, balanced answers across many topics. Stay concise and avoid expert-level detail unless the task is simple and well-known."
       ;;
   esac
 
@@ -303,7 +275,6 @@ for ((i=1; i<NUM_NODES; i++)); do
     --api-port "$API_PORT" \
     --seed "$SEED" \
     --capabilities "$CAP" \
-    --capability-scores "$CAPABILITY_SCORES" \
     --model-name "$MODEL" \
     --bootstrap "$ENTRY_ADDR" \
     --system-prompt "$SYSTEM_PROMPT" \

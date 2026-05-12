@@ -43,7 +43,10 @@ def configure_from_env(args) -> None:
     args.classifier_timeout = env_float("CLASSIFIER_TIMEOUT")
     args.api_host = require_env("API_HOST")
 
-    if args.agent_backend == "local" or args.classifier_backend == "local":
+    if (
+        args.agent_backend == "local"
+        or args.classifier_backend == "local"
+    ):
         args.local_model_id = require_env("LOCAL_MODEL_ID")
         args.local_classifier_model_id = require_env("LOCAL_CLASSIFIER_MODEL_ID")
         args.local_max_new_tokens = env_int("LOCAL_MAX_NEW_TOKENS")
@@ -63,7 +66,10 @@ def configure_from_env(args) -> None:
         args.local_timeout = float(optional_env("LOCAL_TIMEOUT", "40"))
     args.local_system_prompt = args.system_prompt
 
-    if args.agent_backend == "ollama" or args.classifier_backend == "ollama":
+    if (
+        args.agent_backend == "ollama"
+        or args.classifier_backend == "ollama"
+    ):
         args.ollama_model = require_env("OLLAMA_MODEL")
         args.ollama_classifier_model = require_env("OLLAMA_CLASSIFIER_MODEL")
         args.ollama_host = require_env("OLLAMA_HOST")
@@ -82,7 +88,10 @@ def configure_from_env(args) -> None:
         args.ollama_check_timeout = float(optional_env("OLLAMA_CHECK_TIMEOUT", "5"))
     args.ollama_system_prompt = args.system_prompt
 
-    if args.agent_backend == "aiass" or args.classifier_backend == "aiass":
+    if (
+        args.agent_backend == "aiass"
+        or args.classifier_backend == "aiass"
+    ):
         args.aiass_model = require_env("AIASS_MODEL")
         args.aiass_classifier_model = require_env("AIASS_CLASSIFIER_MODEL")
         args.aiass_base_url = require_env("AIASS_BASE_URL")
@@ -132,7 +141,8 @@ async def async_main(args):
         except OllamaError as exc:
             raise RuntimeError(str(exc)) from exc
     if (
-        args.agent_backend == "aiass" or args.classifier_backend == "aiass"
+        args.agent_backend == "aiass"
+        or args.classifier_backend == "aiass"
     ) and (
         not args.aiass_api_key
         or args.aiass_api_key == "YOUR_AIASS_API_KEY_HERE"
@@ -211,7 +221,10 @@ def main():
         "--capability-scores",
         type=str,
         default="",
-        help='JSON object like {"math":0.85,"programming":0.30}',
+        help=(
+            'Initial JSON scores like {"math":0.85}. '
+            "Normal node startup replaces these with simulated scores before DHT advertising."
+        ),
     )
     parser.add_argument(
         "--api-port",

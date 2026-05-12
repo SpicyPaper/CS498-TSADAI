@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from src.env_config import env_float, env_int, load_project_env, require_env
 from src.ui.web_state import (
     STATIC_DIR,
-    build_network_prompt,
+    build_network_context,
     ensure_conversation,
     find_conversation,
     load_conversations,
@@ -45,6 +45,12 @@ class ChatRequest(BaseModel):
 class QueryRequest(BaseModel):
     entry_node: str
     prompt: str
+
+
+class ContextPreviewRequest(BaseModel):
+    prompt: str = ""
+    conversation_id: str | None = None
+    messages: list[dict] | None = None
 
 
 def _set_query_status(query_id: str, **updates) -> None:
@@ -151,7 +157,7 @@ def _prepare_chat_query(request: ChatRequest) -> dict | JSONResponse:
             prompt,
         )
         messages = conversation.setdefault("messages", [])
-        network_prompt = build_network_prompt(messages, prompt)
+        network_prompt, context_info = build_network_context(messages, prompt)
         messages.append(
             {"role": "User", "content": prompt, "created_at": time.time()}
         )
@@ -174,6 +180,7 @@ def _prepare_chat_query(request: ChatRequest) -> dict | JSONResponse:
         "conversation_id": conversation_id,
         "entry_node": entry_node,
         "network_prompt": network_prompt,
+        "context_info": context_info,
         "conversation": conversation,
         "conversations": summarize_conversations(load_conversations()),
     }
@@ -205,6 +212,23 @@ async def get_conversation(conversation_id: str):
         )
 
     return conversation
+
+
+@app.post("/api/context/preview", response_model=None)
+async def context_preview(request: ContextPreviewRequest) -> dict:
+    prompt = request.prompt.strip()
+    messages = request.messages
+    if messages is None:
+        with lock:
+            conversation = (
+                find_conversation(load_conversations(), request.conversation_id)
+                if request.conversation_id
+                else None
+            )
+            messages = conversation.get("messages", []) if conversation else []
+    _, context_info = build_network_context(messages, prompt)
+
+    return {"ok": True, "context_info": context_info}
 
 
 @app.post("/api/conversations")
@@ -262,6 +286,7 @@ async def start_chat(request: ChatRequest, background_tasks: BackgroundTasks):
         "ok": True,
         "query_id": prepared["query_id"],
         "conversation_id": prepared["conversation_id"],
+        "context_info": prepared["context_info"],
         "conversation": prepared["conversation"],
         "conversations": prepared["conversations"],
     }
