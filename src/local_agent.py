@@ -123,6 +123,7 @@ class OllamaAgent(LocalAgent):
         temperature: float = 0.7,
         top_p: float = 0.8,
         think: bool = False,
+        response_format: str | dict | None = None,
     ) -> None:
         self.model = model
         self.host = host.rstrip("/")
@@ -133,6 +134,7 @@ class OllamaAgent(LocalAgent):
         self.temperature = temperature
         self.top_p = top_p
         self.think = think
+        self.response_format = response_format
 
     async def generate(self, prompt: str) -> str:
         return await trio.to_thread.run_sync(self._generate_sync, prompt)
@@ -152,6 +154,8 @@ class OllamaAgent(LocalAgent):
 
         if self.system_prompt is not None:
             payload["system"] = self.system_prompt
+        if self.response_format is not None:
+            payload["format"] = self.response_format
 
         data = json.dumps(payload).encode("utf-8")
 

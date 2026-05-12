@@ -18,6 +18,9 @@ CAPABILITIES = [
 CLASSIFIER_SYSTEM_PROMPT = (
     "Classify the user's latest request for routing. "
     "Return only one JSON object. Keys must be capability names. Values must be numbers from 0.0 to 1.0. "
+    "Do not use fields named capability or score. "
+    "Use general for vague tests, greetings, casual chat, and simple broad requests. "
+    "Use math only for arithmetic, equations, proofs, statistics, or quantitative reasoning. "
     "Choose 1 to 3 capabilities. Use one capability for simple requests. "
     "Scores measure how much the request needs each capability. "
     "Use high scores for essential capabilities, medium scores for helpful secondary capabilities, and low scores for minor supporting capabilities. "
@@ -39,6 +42,19 @@ CLASSIFIER_SYSTEM_PROMPT = (
     "Return the JSON object without any explanation."
 )
 
+CLASSIFIER_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        capability: {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+        }
+        for capability in CAPABILITIES
+    },
+    "additionalProperties": False,
+}
+
 
 class CapabilityClassifier:
     def __init__(
@@ -53,9 +69,10 @@ class CapabilityClassifier:
             host=host,
             timeout_s=timeout_s,
             system_prompt=CLASSIFIER_SYSTEM_PROMPT,
-            num_predict=96,
+            num_predict=192,
             temperature=0.0,
             think=False,
+            response_format=CLASSIFIER_JSON_SCHEMA,
         )
 
     async def classify_scores(self, prompt: str) -> dict[str, float]:
@@ -64,6 +81,10 @@ class CapabilityClassifier:
             f"Allowed keys: {', '.join(CAPABILITIES)}.\n"
             "Values are continuous need scores from 0.0 to 1.0.\n"
             "Use decimals to express partial need.\n\n"
+            'Return shape example: {"general": 0.6}\n'
+            'For "test" or other vague test messages, return {"general": 0.6}.\n'
+            'For "Solve 2x + 4 = 10", return {"math": 0.9}.\n'
+            'Do not return {"capability": "general", "score": 0.6}.\n\n'
             f"Latest user request:\n{prompt}\n\n"
             "Capability score JSON:"
         )
@@ -106,6 +127,18 @@ class CapabilityClassifier:
         if not isinstance(data, dict):
             return {}
 
+        if "capability" in data and "score" in data:
+            capability = str(data["capability"]).strip().lower()
+            if capability not in CAPABILITIES:
+                return {}
+            try:
+                value = float(data["score"])
+            except (TypeError, ValueError):
+                return {}
+            if not 0.0 <= value <= 1.0:
+                return {}
+            return {capability: value} if value > 0.0 else {}
+
         scores: dict[str, float] = {}
         for capability, score in data.items():
             capability = str(capability).strip().lower()
@@ -117,7 +150,8 @@ class CapabilityClassifier:
                 continue
             if not 0.0 <= value <= 1.0:
                 return {}
-            scores[capability] = value
+            if value > 0.0:
+                scores[capability] = value
 
         return dict(
             sorted(

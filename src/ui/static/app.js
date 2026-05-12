@@ -217,6 +217,14 @@ function stepDurationText(ms) {
   return `Took ${formatDuration(ms)}`;
 }
 
+function hopDurationText(hop, field) {
+  return stepDurationText(hop?.[field]);
+}
+
+function forwardTimingText(hop, timing) {
+  return hopDurationText(hop, "forward_duration_ms") || timing?.forward;
+}
+
 function recommendationTimingText(hop) {
   if (typeof hop.recommendation_duration_ms === "number") {
     return stepDurationText(hop.recommendation_duration_ms);
@@ -253,8 +261,8 @@ function eventLabel(eventName) {
     recommendations_completed: "Ask peers for recommendations",
     recommended_candidates_evaluated: "Score recommended candidates",
     no_suitable_node: "Confirm no suitable node",
-    forward_response_received: "Forward to selected peer",
-    forward_failed: "Forward to selected peer",
+    forward_response_received: "Forwarded request round trip",
+    forward_failed: "Forward attempt",
     forwarding_exhausted: "Try forward candidates",
     generation_completed: "Generate answer",
     generation_failed: "Generate answer",
@@ -288,7 +296,32 @@ function timingEndEvent(startEvent, events, startIndex) {
     .find((candidate) => names.includes(candidate.event) && candidate.ts >= startEvent.ts);
 }
 
-function timingRowMetadata(startEvent, endEvent) {
+function forwardedGenerationDurationMs(trace = {}) {
+  for (const hop of trace.hops || []) {
+    if (
+      (hop.action === "execute_forwarded_request" ||
+        hop.action === "forwarded_generation_error") &&
+      typeof hop.generation_duration_ms === "number"
+    ) {
+      return hop.generation_duration_ms;
+    }
+  }
+  return null;
+}
+
+function hasForwardedAnswer(trace = {}) {
+  const hops = trace.hops || [];
+  return (
+    hops.some((hop) => hop.action === "forward") &&
+    hops.some(
+      (hop) =>
+        hop.action === "execute_forwarded_request" ||
+        hop.action === "forwarded_generation_error"
+    )
+  );
+}
+
+function timingRowMetadata(startEvent, endEvent, trace = {}) {
   if (endEvent.event === "recommendations_completed") {
     const statuses = {
       used: "used",
@@ -310,12 +343,21 @@ function timingRowMetadata(startEvent, endEvent) {
       : "";
   }
   if (endEvent.event === "forward_response_received" || endEvent.event === "forward_failed") {
-    return endEvent.target_peer_id ? `peer ${shortId(endEvent.target_peer_id)}` : "";
+    const peer = endEvent.target_peer_id ? `peer ${shortId(endEvent.target_peer_id)}` : "";
+    const timings = endEvent.timings || {};
+    const wait =
+      typeof timings.response_wait_duration_ms === "number"
+        ? `wait ${formatDuration(timings.response_wait_duration_ms)}`
+        : "includes peer processing";
+    const generationMs = forwardedGenerationDurationMs(trace);
+    const generation =
+      generationMs !== null ? `generation ${formatDuration(generationMs)} included` : "";
+    return [peer, wait, generation].filter(Boolean).join(", ");
   }
   return "";
 }
 
-function measuredTimingRows(events) {
+function measuredTimingRows(events, trace = {}) {
   const rows = [];
   const starts = new Set([
     "classification_started",
@@ -340,6 +382,9 @@ function measuredTimingRows(events) {
     if (!starts.has(event.event)) {
       continue;
     }
+    if (event.event === "generation_started" && hasForwardedAnswer(trace)) {
+      continue;
+    }
 
     const endEvent = timingEndEvent(event, events, index);
     const label = endEvent ? eventLabel(endEvent.event) : null;
@@ -360,7 +405,7 @@ function measuredTimingRows(events) {
       label,
       durationMs,
       elapsedMs: (endEvent.ts - events[0].ts) * 1000,
-      meta: timingRowMetadata(event, endEvent),
+      meta: timingRowMetadata(event, endEvent, trace),
     });
   }
 
@@ -373,7 +418,7 @@ function traceTimingSummary(trace = {}) {
     return null;
   }
 
-  const rows = measuredTimingRows(events);
+  const rows = measuredTimingRows(events, trace);
   return {
     totalMs: events.length > 1 ? (events[events.length - 1].ts - events[0].ts) * 1000 : 0,
     rows,
@@ -589,7 +634,7 @@ function makeStepHeader(number, title, description, timingText = null) {
   text.append(label, detail);
   const timing = document.createElement("div");
   timing.className = "trace-step-time";
-  timing.textContent = timingText || stepDurationText(0);
+  timing.textContent = timingText || "";
   text.appendChild(timing);
   header.append(badge, text);
   return header;
@@ -913,14 +958,14 @@ function stageStepText(stage) {
 }
 
 function makeAnswerStep(stepNumber, hop, timing) {
-  const timingText = hop.routed_by_peer_id
-    ? timing?.forward
-    : timing?.generation;
+  const timingText =
+    (hop.routed_by_peer_id ? null : hopDurationText(hop, "generation_duration_ms")) ||
+    (hop.routed_by_peer_id ? null : timing?.generation);
   const section = makeTimelineStep(
     stepNumber,
     "Generate answer",
     hop.routed_by_peer_id
-      ? "The selected node receives the forwarded query and produces the final answer."
+      ? "The selected node produces the final answer inside the forwarded request round trip."
       : "The selected local node produces the final answer.",
     timingText
   );
@@ -933,7 +978,7 @@ function makeForwardFailureStep(stepNumber, hop, timing) {
     stepNumber,
     "Forward failed",
     "The selected node did not answer, so it is marked unreachable and excluded before routing is retried.",
-    timing?.forward
+    forwardTimingText(hop, timing)
   );
   const fields = document.createElement("div");
   fields.className = "trace-fields";
@@ -965,7 +1010,9 @@ function makeTimingSummaryCard(trace) {
 
   const note = document.createElement("div");
   note.className = "trace-timing-note";
-  note.textContent = "Measured inside the network request. Browser-to-gateway time is excluded.";
+  note.textContent =
+    "Measured inside the network request. Browser-to-gateway time is excluded. " +
+    "Forwarded request round trip includes selected-peer processing and generation.";
   section.appendChild(note);
 
   if (summary.rows.length) {
@@ -1020,7 +1067,7 @@ function makeRoutingTrace(trace) {
         stepNumber,
         "Stop routing",
         "All forward attempts failed. The node returns no suitable answer instead of waiting longer.",
-        timing.forward
+        forwardTimingText(hop, timing)
       );
       appendHopFields(exhaustedStep, hop);
       details.appendChild(exhaustedStep);
@@ -1083,9 +1130,9 @@ function makeRoutingTrace(trace) {
     if (hop.action === "forward" && hop.selected?.peer) {
       const forwardStep = makeTimelineStep(
         stepNumber,
-        "Forward query",
-        "The query is sent to the selected node so it can generate the answer.",
-        timing.forward
+        "Forwarded request round trip",
+        "The entry node sends the query and waits for the selected node's full response, including generation.",
+        forwardTimingText(hop, timing)
       );
       const fields = document.createElement("div");
       fields.className = "trace-fields";

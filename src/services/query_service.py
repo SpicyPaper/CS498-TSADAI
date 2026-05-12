@@ -1,4 +1,5 @@
 import uuid
+import time
 from collections.abc import Callable
 
 import trio
@@ -101,10 +102,13 @@ class QueryService:
         answered_by: dict | None = None,
         downstream_trace: dict | None = None,
         previous_hops: list[dict] | None = None,
+        hop_fields: dict | None = None,
     ) -> dict:
         hop = dict(decision_trace or {})
         hop["node"] = self._node_summary()
         hop["action"] = action
+        if hop_fields:
+            hop.update(hop_fields)
 
         if downstream_trace and isinstance(downstream_trace.get("hops"), list):
             hops = [hop] + downstream_trace["hops"]
@@ -206,21 +210,32 @@ class QueryService:
                     },
                 }
 
+            generation_started_at = None
             try:
                 emit(
                     "generation_started",
                     "The selected node started generating the answer.",
                     node=self._node_summary(),
                 )
+                generation_started_at = time.perf_counter()
                 answer = await self.local_agent.generate(
                     self._execution_prompt(prompt, context.required_capabilities)
                 )
+                generation_duration_ms = (
+                    time.perf_counter() - generation_started_at
+                ) * 1000
             except Exception as exc:
                 log("SERVER", f"Forwarded local generation failed: {exc}")
+                generation_duration_ms = (
+                    (time.perf_counter() - generation_started_at) * 1000
+                    if generation_started_at is not None
+                    else None
+                )
                 emit(
                     "generation_failed",
                     "The selected node failed while generating the answer.",
                     error=str(exc),
+                    duration_ms=generation_duration_ms,
                 )
                 return {
                     "type": "response",
@@ -237,6 +252,7 @@ class QueryService:
                                 "required_capabilities": context.required_capabilities,
                                 "routed_by_peer_id": context.routed_by_peer_id,
                                 "error": str(exc),
+                                "generation_duration_ms": generation_duration_ms,
                             }
                         ],
                     },
@@ -246,6 +262,7 @@ class QueryService:
                 "generation_completed",
                 "The selected node finished generating the answer.",
                 node=self._node_summary(),
+                duration_ms=generation_duration_ms,
             )
             return {
                 "type": "response",
@@ -261,6 +278,7 @@ class QueryService:
                             "action": "execute_forwarded_request",
                             "required_capabilities": context.required_capabilities,
                             "routed_by_peer_id": context.routed_by_peer_id,
+                            "generation_duration_ms": generation_duration_ms,
                         }
                     ],
                 },
@@ -327,21 +345,32 @@ class QueryService:
 
         # Execute locally.
         if decision.execute_locally:
+            generation_started_at = None
             try:
                 emit(
                     "generation_started",
                     "The entry node selected itself and started generating the answer.",
                     node=self._node_summary(),
                 )
+                generation_started_at = time.perf_counter()
                 answer = await self.local_agent.generate(
                     self._execution_prompt(prompt, routing_context.required_capabilities)
                 )
+                generation_duration_ms = (
+                    time.perf_counter() - generation_started_at
+                ) * 1000
             except Exception as exc:
                 log("SERVER", f"Local generation failed: {exc}")
+                generation_duration_ms = (
+                    (time.perf_counter() - generation_started_at) * 1000
+                    if generation_started_at is not None
+                    else None
+                )
                 emit(
                     "generation_failed",
                     "The local node failed while generating the answer.",
                     error=str(exc),
+                    duration_ms=generation_duration_ms,
                 )
                 return {
                     "type": "response",
@@ -352,6 +381,7 @@ class QueryService:
                         query_id,
                         decision.routing_trace,
                         "generation_error",
+                        hop_fields={"generation_duration_ms": generation_duration_ms},
                     ),
                 }
             routing_trace = self._response_trace(
@@ -359,11 +389,13 @@ class QueryService:
                 decision.routing_trace,
                 "execute_local",
                 answered_by=self._node_summary(),
+                hop_fields={"generation_duration_ms": generation_duration_ms},
             )
             emit(
                 "generation_completed",
                 "The local node finished generating the answer.",
                 node=self._node_summary(),
+                duration_ms=generation_duration_ms,
             )
         # Forward to another peer.
         else:
@@ -380,11 +412,12 @@ class QueryService:
                 )
                 emit(
                     "forward_started",
-                    "The entry node is forwarding the query to the selected peer.",
+                    "The entry node is sending the query and waiting for the selected peer.",
                     target_peer_id=decision.target_peer_id,
                     attempt=attempt + 1,
                 )
 
+                forward_started_at = time.perf_counter()
                 forwarded = await self.query_peer(
                     ID.from_base58(decision.target_peer_id),
                     prompt=prompt,
@@ -396,14 +429,17 @@ class QueryService:
                         routed_by_peer_id=self.host.get_id().to_string(),
                     ),
                 )
+                forward_duration_ms = (time.perf_counter() - forward_started_at) * 1000
 
                 if forwarded.ok:
                     emit(
                         "forward_response_received",
-                        "The selected peer answered the forwarded query.",
+                        "The selected peer returned a response.",
                         target_peer_id=decision.target_peer_id,
                         status=forwarded.status,
                         attempt=attempt + 1,
+                        duration_ms=forward_duration_ms,
+                        timings=forwarded.timings,
                     )
                     self.routing_service.peer_registry.mark_peer_alive(
                         decision.target_peer_id,
@@ -422,6 +458,10 @@ class QueryService:
                                 "forward_no_suitable_node",
                                 downstream_trace=forwarded.routing_trace,
                                 previous_hops=failed_forward_hops,
+                                hop_fields={
+                                    "forward_duration_ms": forward_duration_ms,
+                                    "forward_timings": forwarded.timings,
+                                },
                             ),
                         }
 
@@ -437,6 +477,10 @@ class QueryService:
                                 "forward_error",
                                 downstream_trace=forwarded.routing_trace,
                                 previous_hops=failed_forward_hops,
+                                hop_fields={
+                                    "forward_duration_ms": forward_duration_ms,
+                                    "forward_timings": forwarded.timings,
+                                },
                             ),
                         }
 
@@ -447,6 +491,10 @@ class QueryService:
                         "forward",
                         downstream_trace=forwarded.routing_trace,
                         previous_hops=failed_forward_hops,
+                        hop_fields={
+                            "forward_duration_ms": forward_duration_ms,
+                            "forward_timings": forwarded.timings,
+                        },
                     )
                     break
 
@@ -463,6 +511,8 @@ class QueryService:
                     target_peer_id=decision.target_peer_id,
                     error=forwarded.error,
                     attempt=attempt + 1,
+                    duration_ms=forward_duration_ms,
+                    timings=forwarded.timings,
                 )
                 failed_forward_hops.append(
                     self._failed_forward_hop(
@@ -472,6 +522,8 @@ class QueryService:
                         attempt + 1,
                     )
                 )
+                failed_forward_hops[-1]["forward_duration_ms"] = forward_duration_ms
+                failed_forward_hops[-1]["forward_timings"] = forwarded.timings
 
                 excluded_peer_ids.append(decision.target_peer_id)
 
@@ -519,23 +571,29 @@ class QueryService:
                         "After retrying routing, the entry node selected itself and started generating the answer.",
                         node=self._node_summary(),
                     )
+                    generation_started_at = time.perf_counter()
                     answer = await self.local_agent.generate(
                         self._execution_prompt(
                             prompt,
                             routing_context.required_capabilities,
                         )
                     )
+                    generation_duration_ms = (
+                        time.perf_counter() - generation_started_at
+                    ) * 1000
                     routing_trace = self._response_trace(
                         query_id,
                         decision.routing_trace,
                         "execute_local_after_forward_failure",
                         answered_by=self._node_summary(),
                         previous_hops=failed_forward_hops,
+                        hop_fields={"generation_duration_ms": generation_duration_ms},
                     )
                     emit(
                         "generation_completed",
                         "The local node finished generating the answer.",
                         node=self._node_summary(),
+                        duration_ms=generation_duration_ms,
                     )
                     break
 
@@ -638,6 +696,8 @@ class QueryService:
 
         stream = None
         connect_timeout_s = connect_timeout_s or self.query_connect_timeout_s
+        total_started_at = time.perf_counter()
+        timings: dict[str, float] = {}
 
         try:
             known_addr = self.routing_service.peer_registry.get_any_address(
@@ -645,6 +705,7 @@ class QueryService:
             )
 
             try:
+                connect_started_at = time.perf_counter()
                 with trio.fail_after(connect_timeout_s):
                     if known_addr is not None:
                         try:
@@ -658,23 +719,40 @@ class QueryService:
                     stream = await self.transport.open_stream(
                         self.host, peer_id, QUERY_PROTOCOL
                     )
+                timings["connect_duration_ms"] = (
+                    time.perf_counter() - connect_started_at
+                ) * 1000
             except trio.TooSlowError:
                 log("CLIENT", f"Query connect timeout after {connect_timeout_s:.2f}s")
+                timings["connect_duration_ms"] = (
+                    time.perf_counter() - connect_started_at
+                ) * 1000
+                timings["total_duration_ms"] = (
+                    time.perf_counter() - total_started_at
+                ) * 1000
                 return QueryResult(
                     ok=False,
                     peer_id=str(peer_id),
                     answer=None,
                     error=f"connect timeout after {connect_timeout_s:.2f}s",
                     status="error",
+                    timings=timings,
                 )
             except Exception as exc:
                 log("CLIENT", f"Query connect failed: {exc}")
+                timings["connect_duration_ms"] = (
+                    time.perf_counter() - connect_started_at
+                ) * 1000
+                timings["total_duration_ms"] = (
+                    time.perf_counter() - total_started_at
+                ) * 1000
                 return QueryResult(
                     ok=False,
                     peer_id=str(peer_id),
                     answer=None,
                     error=str(exc),
                     status="error",
+                    timings=timings,
                 )
 
             payload = {
@@ -690,10 +768,21 @@ class QueryService:
             }
 
             with trio.fail_after(timeout_s):
+                send_started_at = time.perf_counter()
                 await self.transport.send_message(stream, payload, role="CLIENT")
+                timings["send_duration_ms"] = (
+                    time.perf_counter() - send_started_at
+                ) * 1000
                 log("CLIENT", f"Query sent to peer={peer_id} query_id={query_id} ")
 
+                wait_started_at = time.perf_counter()
                 reply = await self.transport.receive_message(stream, role="CLIENT")
+                timings["response_wait_duration_ms"] = (
+                    time.perf_counter() - wait_started_at
+                ) * 1000
+                timings["total_duration_ms"] = (
+                    time.perf_counter() - total_started_at
+                ) * 1000
                 log(
                     "CLIENT",
                     f"Response received from peer={peer_id} query_id={query_id} "
@@ -708,6 +797,7 @@ class QueryService:
                     answer=None,
                     error=f"unexpected response type: {reply.get('type')}",
                     status="error",
+                    timings=timings,
                 )
 
             # Check that the response has the same query_id
@@ -718,6 +808,7 @@ class QueryService:
                     answer=None,
                     error="query_id mismatch",
                     status="error",
+                    timings=timings,
                 )
 
             return QueryResult(
@@ -727,25 +818,34 @@ class QueryService:
                 error=None,
                 status=reply.get("status", "ok"),
                 routing_trace=reply.get("routing_trace"),
+                timings=timings,
             )
 
         except trio.TooSlowError:
             log("CLIENT", f"Query timeout after {timeout_s:.2f}s")
+            timings["total_duration_ms"] = (
+                time.perf_counter() - total_started_at
+            ) * 1000
             return QueryResult(
                 ok=False,
                 peer_id=str(peer_id),
                 answer=None,
                 error=f"timeout after {timeout_s:.2f}s",
                 status="error",
+                timings=timings,
             )
         except Exception as exc:
             log("CLIENT", f"Query failed: {exc}")
+            timings["total_duration_ms"] = (
+                time.perf_counter() - total_started_at
+            ) * 1000
             return QueryResult(
                 ok=False,
                 peer_id=str(peer_id),
                 answer=None,
                 error=str(exc),
                 status="error",
+                timings=timings,
             )
         finally:
             if stream is not None:
