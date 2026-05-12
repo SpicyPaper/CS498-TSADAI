@@ -8,13 +8,17 @@ let state = {
   selectedTraceId: null,
   selectedTrace: null,
   selectedTraceLabel: "",
+  contextPreviewTimer: null,
+  contextPreviewSeq: 0,
 };
 
 const els = {
   appShell: document.querySelector(".app-shell"),
   nodeSelect: document.querySelector("#node-select"),
+  appAlert: document.querySelector("#app-alert"),
   conversationList: document.querySelector("#conversation-list"),
   messages: document.querySelector("#messages"),
+  contextMeter: document.querySelector("#context-meter"),
   prompt: document.querySelector("#prompt"),
   form: document.querySelector("#chat-form"),
   send: document.querySelector("#send"),
@@ -31,6 +35,24 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+function showAppAlert(message, type = "error") {
+  if (!els.appAlert) {
+    return;
+  }
+  els.appAlert.textContent = message;
+  els.appAlert.className = `app-alert ${type}`;
+  els.appAlert.hidden = false;
+}
+
+function clearAppAlert() {
+  if (!els.appAlert) {
+    return;
+  }
+  els.appAlert.textContent = "";
+  els.appAlert.className = "app-alert";
+  els.appAlert.hidden = true;
 }
 
 function renderInlineMarkdown(value) {
@@ -1257,7 +1279,11 @@ function renderConversations() {
       button.classList.add("active");
     }
     button.textContent = conversation.title;
-    button.addEventListener("click", () => selectConversation(conversation.id));
+    button.addEventListener("click", () => {
+      selectConversation(conversation.id).catch((error) => {
+        showAppAlert(error.message || "Could not open the conversation.", "error");
+      });
+    });
     els.conversationList.appendChild(button);
   }
 }
@@ -1325,6 +1351,79 @@ function renderMessages() {
   typesetMath(scrollState);
 }
 
+function formatContextMeter(info) {
+  if (!info || typeof info !== "object") {
+    return "";
+  }
+  const tokens = Number(info.chat_approx_tokens ?? info.approx_tokens ?? 0);
+  const maxTokens = Number(info.max_context_tokens || 0);
+  if (!maxTokens) {
+    return "";
+  }
+  const used = Math.max(0, Math.min(tokens, maxTokens));
+  const includedMessages = Math.max(0, Number(info.included_messages || 0));
+  const availableMessages = Math.max(0, Number(info.available_messages || 0));
+  return (
+    `Context: ~${used.toLocaleString()} / ~${maxTokens.toLocaleString()} tokens` +
+    ` - ${includedMessages.toLocaleString()} / ${availableMessages.toLocaleString()} last chat turns`
+  );
+}
+
+function renderContextMeter(info = null) {
+  if (!els.contextMeter) {
+    return;
+  }
+  const text = formatContextMeter(info);
+  els.contextMeter.textContent = text || "";
+}
+
+async function refreshContextPreview() {
+  if (!els.contextMeter) {
+    return;
+  }
+  const sequence = ++state.contextPreviewSeq;
+  const previewMessages = (state.currentConversation?.messages || [])
+    .filter((message) => !message.pending)
+    .map((message) => ({
+      role: message.role,
+      content: message.content,
+    }));
+  const draft = els.prompt.value.trim();
+  if (draft) {
+    previewMessages.push({
+      role: "User",
+      content: draft,
+    });
+  }
+  try {
+    const data = await api("/api/context/preview", {
+      method: "POST",
+      body: JSON.stringify({
+        conversation_id: state.currentConversationId?.startsWith("local-")
+          ? null
+          : state.currentConversationId,
+        messages: previewMessages,
+        prompt: "",
+      }),
+    });
+    if (sequence !== state.contextPreviewSeq) {
+      return;
+    }
+    renderContextMeter(data.context_info);
+  } catch {
+    if (sequence === state.contextPreviewSeq) {
+      renderContextMeter(null);
+    }
+  }
+}
+
+function scheduleContextPreview(delay = 180) {
+  if (state.contextPreviewTimer) {
+    clearTimeout(state.contextPreviewTimer);
+  }
+  state.contextPreviewTimer = setTimeout(refreshContextPreview, delay);
+}
+
 function typesetMath(scrollState = messagesScrollState()) {
   if (window.MathJax?.typesetPromise) {
     window.MathJax.typesetPromise([els.messages])
@@ -1364,28 +1463,34 @@ function ensureOptimisticConversation(prompt) {
 }
 
 async function refreshState() {
+  clearAppAlert();
   const data = await api("/api/state");
   state.nodes = data.nodes;
   state.conversations = data.conversations;
   renderNodes();
   renderConversations();
+  scheduleContextPreview(0);
 }
 
 async function selectConversation(conversationId) {
+  clearAppAlert();
   const conversation = await api(`/api/conversations/${encodeURIComponent(conversationId)}`);
   state.currentConversationId = conversation.id;
   state.currentConversation = conversation;
   resetTraceSelection();
   renderConversations();
   renderMessages();
+  scheduleContextPreview(0);
 }
 
 function newChat() {
+  clearAppAlert();
   state.currentConversationId = null;
   state.currentConversation = null;
   resetTraceSelection();
   renderConversations();
   renderMessages();
+  scheduleContextPreview(0);
   els.prompt.focus();
 }
 
@@ -1393,6 +1498,7 @@ async function deleteChat() {
   if (!state.currentConversationId) {
     return;
   }
+  clearAppAlert();
   const data = await api(`/api/conversations/${encodeURIComponent(state.currentConversationId)}`, {
     method: "DELETE",
   });
@@ -1402,10 +1508,12 @@ async function deleteChat() {
   resetTraceSelection();
   renderConversations();
   renderMessages();
+  scheduleContextPreview(0);
 }
 
 async function sendMessage(event) {
   event.preventDefault();
+  clearAppAlert();
   const prompt = els.prompt.value.trim();
   const entryNode = els.nodeSelect.value;
   if (!prompt || !entryNode) {
@@ -1429,6 +1537,7 @@ async function sendMessage(event) {
   renderMessages();
 
   els.prompt.value = "";
+  scheduleContextPreview(0);
   els.send.disabled = true;
 
   try {
@@ -1445,7 +1554,12 @@ async function sendMessage(event) {
     conversation.id = start.conversation.id;
     state.currentConversation = conversation;
     state.conversations = start.conversations;
+    const pending = conversation.messages.find((message) => message.pending);
+    if (pending) {
+      pending.context_info = start.context_info;
+    }
     renderConversations();
+    renderMessages();
 
     while (true) {
       await sleep(1000);
@@ -1470,17 +1584,17 @@ async function sendMessage(event) {
       state.conversations = data.conversations;
       renderConversations();
       renderMessages();
+      scheduleContextPreview(0);
       break;
     }
   } catch (error) {
-    const pending = conversation.messages.find((message) => message.pending);
-    if (pending) {
-      pending.pending = false;
-      pending.content = error.message;
-      pending.error = true;
-      pending.role = "Error";
+    const pendingIndex = conversation.messages.findIndex((message) => message.pending);
+    if (pendingIndex >= 0) {
+      conversation.messages.splice(pendingIndex, 1);
     }
+    showAppAlert(error.message || "The request failed.", "error");
     renderMessages();
+    scheduleContextPreview(0);
   } finally {
     els.send.disabled = false;
     els.prompt.focus();
@@ -1488,9 +1602,17 @@ async function sendMessage(event) {
 }
 
 els.form.addEventListener("submit", sendMessage);
-els.refresh.addEventListener("click", refreshState);
+els.refresh.addEventListener("click", () => {
+  refreshState().catch((error) => {
+    showAppAlert(error.message || "Could not refresh the app state.", "error");
+  });
+});
 els.newChat.addEventListener("click", newChat);
-els.deleteChat.addEventListener("click", deleteChat);
+els.deleteChat.addEventListener("click", () => {
+  deleteChat().catch((error) => {
+    showAppAlert(error.message || "Could not delete the conversation.", "error");
+  });
+});
 els.inspectorResize.addEventListener("pointerdown", startInspectorResize);
 els.inspectorResize.addEventListener("pointermove", (event) => {
   if (els.inspectorResize.hasPointerCapture(event.pointerId)) {
@@ -1505,5 +1627,13 @@ els.prompt.addEventListener("keydown", (event) => {
     els.form.requestSubmit();
   }
 });
+els.prompt.addEventListener("input", () => scheduleContextPreview());
 
-refreshState().then(renderMessages).catch(() => {});
+refreshState()
+  .then(() => {
+    renderMessages();
+    scheduleContextPreview(0);
+  })
+  .catch((error) => {
+    showAppAlert(error.message || "Could not load the app state.", "error");
+  });

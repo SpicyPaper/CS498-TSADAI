@@ -27,16 +27,31 @@
           <button id="refresh" class="secondary" type="button">Refresh</button>
         </header>
 
+        <section
+          id="app-alert"
+          class="app-alert"
+          role="status"
+          aria-live="polite"
+          hidden
+        ></section>
+
         <section id="messages" class="messages"></section>
 
-        <form id="chat-form" class="composer">
-          <textarea
-            id="prompt"
-            rows="2"
-            placeholder="Ask the network..."
-          ></textarea>
-          <button id="send" type="submit">Send</button>
-        </form>
+        <div class="composer-shell">
+          <div
+            id="context-meter"
+            class="context-meter"
+            aria-live="polite"
+          ></div>
+          <form id="chat-form" class="composer">
+            <textarea
+              id="prompt"
+              rows="2"
+              placeholder="Ask the network..."
+            ></textarea>
+            <button id="send" type="submit">Send</button>
+          </form>
+        </div>
       </section>
 
       <div
